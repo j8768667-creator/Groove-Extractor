@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
-<title>MIDI Groove Extractor Pro v4.4</title>
+<title>MIDI Groove Extractor Pro v4.5</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f2f4f8;color:#1a1e2c;touch-action:manipulation}
@@ -54,7 +54,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
 <body>
 <div class="app" id="app">
   <header>
-    <h1>MIDI Groove Extractor <small>Pro v4.4</small></h1>
+    <h1>MIDI Groove Extractor <small>Pro v4.5</small></h1>
   </header>
 
   <div class="tabs" id="tabs">
@@ -121,7 +121,8 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
       <span style="font-weight:600;margin-right:8px;">Apply to tracks:</span>
       <span id="trackList">(load target)</span>
     </div>
-    <button id="applyBtn">⚡ Apply Groove</button>
+    <button id="applyBtn">⚡ Apply / Reapply from Original</button>
+    <div class="status" style="font-size:12px">Every application starts from the originally loaded target MIDI, so changing a setting never compounds or reuses an older result.</div>
     <div id="applyResult" class="status"></div>
     <div class="canvas-wrap">
       <canvas id="pianoRollAfter"></canvas>
@@ -472,6 +473,39 @@ function analyzeGroove(eventsPerTrack, division) {
   }
   const swingPercent = swingCount > 0 ? (swingSum / swingCount) : 50;
 
+  // Fill empty steps from equivalent subdivisions in other beats. Sparse source
+  // clips otherwise leave most target notes with a zero offset and no velocity
+  // character. Priority: same subdivision (step % 4), then nearest populated step.
+  for (let i = 0; i < stepData.length; i++) {
+    if (stepData[i].hits > 0) continue;
+    const sameSubdivision = stepData
+      .map((s, idx) => ({ s, idx }))
+      .filter(x => x.s.hits > 0 && (x.idx % 4) === (i % 4));
+    let donor = null;
+    if (sameSubdivision.length) {
+      donor = sameSubdivision.reduce((best, x) =>
+        !best || Math.abs(x.idx - i) < Math.abs(best.idx - i) ? x : best, null);
+    } else {
+      const populated = stepData.map((s, idx) => ({ s, idx })).filter(x => x.s.hits > 0);
+      donor = populated.reduce((best, x) =>
+        !best || Math.abs(x.idx - i) < Math.abs(best.idx - i) ? x : best, null);
+    }
+    if (donor) {
+      stepData[i] = { ...stepData[i], offset: donor.s.offset, avgVel: donor.s.avgVel, inferred: true };
+    }
+  }
+
+  // Build a musically useful swing fallback. This ensures an extracted swung
+  // eighth feel transfers even when the source has no note on every offbeat.
+  const swingDelay = (swingPercent / 100 * ticksPerBeat) - (ticksPerBeat / 2);
+  for (let beat = 0; beat < 4; beat++) {
+    const off8 = beat * 4 + 2;
+    if (Math.abs(stepData[off8].offset) < 1 && Math.abs(swingDelay) >= 1) {
+      stepData[off8].offset = swingDelay;
+      stepData[off8].inferred = true;
+    }
+  }
+
   return {
     division,
     ticksPerBar,
@@ -489,7 +523,7 @@ function analyzeGroove(eventsPerTrack, division) {
 // --------------------------------------------------------------------
 function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, mode, preserveChords, preserveBass, drumMode, maxShiftMs, trackMask, targetDivision, tempo) {
   // Clone events per track
-  const newEvents = eventsPerTrack.map(track => track.map(ev => ({ ...ev })));
+  const newEvents = eventsPerTrack.map(track => track.map(ev => { const c = { ...ev }; delete c._group; delete c._processed; return c; }));
   // Compute max shift in ticks from milliseconds
   const ticksPerSecond = targetDivision * (tempo / 60);
   const maxShiftTicks = Math.round(maxShiftMs / 1000 * ticksPerSecond);
@@ -535,16 +569,15 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     const barTick = tick - bar * ticksPerBar;
     const step = chooseGrooveStep(barTick, profile.stepTicks, profile.stepCount);
     const gridTick = step * profile.stepTicks;
-    const offset = profile.profile[step].offset;
-    // Compute the full groove target, then interpolate linearly.
-    // IMPORTANT: gridTick is bar-relative. Include the absolute bar start.
-    // Without this, every note after bar 1 was pulled toward bar 1 and merely
-    // limited by Max Timing Shift, producing a near-uniform shift rather than groove.
-    const grooveTarget = bar * ticksPerBar + gridTick + offset;
-    const newTick = tick + (grooveTarget - tick) * (strength / 100);
-    // Clamp by max shift
-    const shift = newTick - tick;
-    const clampedShift = clamp(shift, -maxShiftTicks, maxShiftTicks);
+    const sourceOffset = Number(profile.profile[step]?.offset || 0);
+
+    // Transfer the source deviation onto the target's nearest musical grid.
+    // This is deliberately not a pull toward bar 1 and not a no-op on sparse
+    // profiles. At 100%, the target onset becomes grid + source deviation.
+    const absoluteGrid = bar * ticksPerBar + gridTick;
+    const desiredTick = absoluteGrid + sourceOffset;
+    const requestedShift = (desiredTick - tick) * (strength / 100);
+    const clampedShift = clamp(requestedShift, -maxShiftTicks, maxShiftTicks);
     return tick + clampedShift;
   }
 
@@ -872,7 +905,32 @@ function invalidateApply() {
   document.getElementById('exportBtn').disabled = true;
 }
 
-// ----------------------- Apply -----------------------
+// ----------------------- Apply / Reapply -----------------------
+const grooveSettingIds = ['timingStrength','velStrength','applyMode','maxShift','preserveChords','preserveBass','drumMode'];
+for (const id of grooveSettingIds) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.addEventListener(el.type === 'range' ? 'input' : 'change', () => {
+    if (appliedEvents) {
+      document.getElementById('applyResult').textContent = 'Settings changed. Press Apply / Reapply from Original to generate a fresh result.';
+      document.getElementById('applyResult').className = 'status';
+      document.getElementById('exportStatus').textContent = 'Result is out of date. Reapply before export.';
+      document.getElementById('exportStatus').className = 'status';
+      document.getElementById('exportBtn').disabled = true;
+      document.getElementById('playAfterBtn').disabled = true;
+    }
+  });
+}
+
+document.getElementById('trackSelection').addEventListener('change', () => {
+  if (appliedEvents) {
+    document.getElementById('applyResult').textContent = 'Track selection changed. Press Apply / Reapply from Original.';
+    document.getElementById('applyResult').className = 'status';
+    document.getElementById('exportBtn').disabled = true;
+    document.getElementById('playAfterBtn').disabled = true;
+  }
+});
+
 document.getElementById('applyBtn').addEventListener('click', () => {
   if (!sourceGroove || !targetEvents) {
     document.getElementById('applyResult').textContent = 'Load both source and target first.';
@@ -932,7 +990,7 @@ document.getElementById('applyBtn').addEventListener('click', () => {
     if (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) {
       document.getElementById('applyResult').textContent = 'No change was produced. Check that the chosen target tracks contain notes. For a stronger result, increase Timing/Velocity Strength, raise Max Timing Shift, or turn off bass protection.';
     } else {
-      document.getElementById('applyResult').textContent = `Groove applied: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, average shift ${avgMoveMs} ms, maximum shift ${maxMoveMs} ms.`;
+      document.getElementById('applyResult').textContent = `Fresh reapply from original target: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, average shift ${avgMoveMs} ms, maximum shift ${maxMoveMs} ms.`;
     }
     document.getElementById('applyResult').className = (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) ? 'status err' : 'status ok';
     // Draw after piano roll
@@ -1311,7 +1369,7 @@ invalidateApply();
 document.getElementById('playAfterBtn').disabled = true;
 document.getElementById('exportBtn').disabled = true;
 
-console.log('MIDI Groove Extractor Pro v4.4 bar-position groove fix ready.');
+console.log('MIDI Groove Extractor Pro v4.5 bar-position groove fix ready.');
 </script>
 </body>
 </html>
