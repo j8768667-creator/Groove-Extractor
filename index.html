@@ -114,7 +114,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
     </div>
     <div class="row">
       <label><input type="checkbox" id="preserveChords" checked> Preserve chords</label>
-      <label><input type="checkbox" id="preserveBass" checked> Protect bass</label>
+      <label><input type="checkbox" id="preserveBass" checked> Protect bass (reduced effect)</label>
       <label><input type="checkbox" id="drumMode"> Drum‑aware mode</label>
     </div>
     <div class="track-check" id="trackSelection">
@@ -551,10 +551,15 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     // First pass: collect noteOns and apply changes
     for (const ev of track) {
       if (ev.type !== 'noteOn') continue;
-      // Bass protection
-      if (preserveBass && (ev.channel === 1 || ev.pitch < 60)) continue;
-      // Drum mode: we'll handle separately later
-      if (drumMode && ev.channel === 9) continue;
+      // Bass protection should reduce the groove, not bypass it entirely.
+      // The previous version skipped every note below middle C, which meant many
+      // bass, chord and left-hand target files were exported unchanged.
+      const isBass = (ev.channel === 1 || ev.pitch < 48);
+      const isDrum = (ev.channel === 9);
+      const timingFactor = (preserveBass && isBass) ? 0.45 : 1;
+      const velocityFactor = (preserveBass && isBass) ? 0.55 : 1;
+      // Drum-aware mode keeps drum chords/hits together but still applies groove.
+      // It must not skip channel 10 notes.
 
       const group = ev._group;
       if (group && preserveChords) {
@@ -566,10 +571,10 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
         let newAvgTick = avgTick;
         let newAvgVel = avgVel;
         if (mode === 'timing' || mode === 'both') {
-          newAvgTick = applyTiming(avgTick, sourceProfile, timingStr);
+          newAvgTick = applyTiming(avgTick, sourceProfile, timingStr * timingFactor);
         }
         if (mode === 'velocity' || mode === 'both') {
-          newAvgVel = applyVelocity(avgVel, avgTick, sourceProfile, velStr);
+          newAvgVel = applyVelocity(avgVel, avgTick, sourceProfile, velStr * velocityFactor);
         }
         const shift = newAvgTick - avgTick;
         const velShift = newAvgVel - avgVel;
@@ -587,11 +592,11 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
       // Individual note
       let newTick = ev.tick, newVel = ev.velocity;
       if (mode === 'timing' || mode === 'both') {
-        newTick = applyTiming(ev.tick, sourceProfile, timingStr);
+        newTick = applyTiming(ev.tick, sourceProfile, timingStr * timingFactor);
         newTick = Math.max(0, newTick);
       }
       if (mode === 'velocity' || mode === 'both') {
-        newVel = applyVelocity(ev.velocity, ev.tick, sourceProfile, velStr);
+        newVel = applyVelocity(ev.velocity, ev.tick, sourceProfile, velStr * velocityFactor);
       }
       ev.tick = Math.round(newTick);
       ev.velocity = newVel;
@@ -633,6 +638,23 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     });
   }
 
+  // Record exactly how much changed so the UI can warn when the source
+  // groove is effectively straight/flat or protection settings are too strong.
+  let movedNotes = 0, velocityChanged = 0, maxMoveTicks = 0;
+  for (let ti = 0; ti < newEvents.length; ti++) {
+    const beforeTrack = eventsPerTrack[ti] || [];
+    const beforeById = new Map(beforeTrack.filter(e => e.type === 'noteOn').map(e => [e.noteId, e]));
+    for (const ev of newEvents[ti]) {
+      if (ev.type !== 'noteOn') continue;
+      const before = beforeById.get(ev.noteId);
+      if (!before) continue;
+      const move = Math.abs(ev.tick - before.tick);
+      if (move > 0) movedNotes++;
+      if (ev.velocity !== before.velocity) velocityChanged++;
+      if (move > maxMoveTicks) maxMoveTicks = move;
+    }
+  }
+  newEvents._grooveStats = { movedNotes, velocityChanged, maxMoveTicks };
   return newEvents;
 }
 
@@ -878,8 +900,16 @@ document.getElementById('applyBtn').addEventListener('click', () => {
       targetTempo
     );
 
-    document.getElementById('applyResult').textContent = 'Groove applied successfully!';
-    document.getElementById('applyResult').className = 'status ok';
+    const changeStats = appliedEvents._grooveStats || { movedNotes: 0, velocityChanged: 0, maxMoveTicks: 0 };
+    const maxMoveMs = targetDivision && targetTempo
+      ? Math.round(changeStats.maxMoveTicks / (targetDivision * (targetTempo / 60)) * 1000)
+      : 0;
+    if (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) {
+      document.getElementById('applyResult').textContent = 'No audible change was produced. Try a source with stronger timing/velocity variation, increase strengths, increase Max Timing Shift, or turn off bass protection.';
+    } else {
+      document.getElementById('applyResult').textContent = `Groove applied: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, maximum shift ${maxMoveMs} ms.`;
+    }
+    document.getElementById('applyResult').className = (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) ? 'status err' : 'status ok';
     // Draw after piano roll
     const notes = extractNoteOns(appliedEvents);
     drawPianoRoll(document.getElementById('pianoRollAfter'), notes, targetDivision);
