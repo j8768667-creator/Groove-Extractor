@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
-<title>MIDI Groove Extractor Pro v5.0</title>
+<title>MIDI Groove Extractor Pro v5.1</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f2f4f8;color:#1a1e2c;touch-action:manipulation}
@@ -55,7 +55,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
 <body>
 <div class="app" id="app">
   <header>
-    <h1>MIDI Groove Extractor <small>Pro v5.0</small></h1>
+    <h1>MIDI Groove Extractor <small>Pro v5.1</small></h1>
   </header>
 
   <div class="tabs" id="tabs">
@@ -116,8 +116,8 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
     </div>
     <div class="row">
       <label><input type="checkbox" id="preserveChords" checked> Chord Lock (move chord notes together)</label>
-      <label><input type="checkbox" id="preserveBass" checked> Bass protection (cap extreme movement)</label>
-      <label><input type="checkbox" id="drumMode"> Drum‑aware mode</label>
+      <label><input type="checkbox" id="preserveBass" checked> Bass protection (caps movement of low notes, e.g. a bassline — channel 10 percussion is never treated as bass)</label>
+      <label><input type="checkbox" id="drumMode"> Drum‑aware mode (also exempt low notes on other channels from the bass cap, e.g. drums placed outside channel 10)</label>
     </div>
     <div class="track-check" id="trackSelection">
       <span style="font-weight:600;margin-right:8px;">Apply to tracks:</span>
@@ -601,12 +601,23 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     return clamp(Math.round(newVel), 1, 127);
   }
 
+  // General MIDI percussion (channel 9, 0-indexed = MIDI channel 10) is never "bass" no matter
+  // how low its note numbers are — kick/snare/hihat all sit under 48 by convention, which was
+  // silently routing almost all drum material through the (much tighter) Bass Max Shift cap
+  // instead of Max Timing Shift, regardless of Timing Strength. Drum-aware mode additionally lets
+  // the user opt out of the pitch<48 heuristic entirely for tracks that aren't on channel 9.
+  function isBassNote(ev) {
+    if (ev.channel === 9) return false;
+    if (drumMode) return false;
+    return ev.channel === 1 || ev.pitch < 48;
+  }
+
   for (let ti = 0; ti < newEvents.length; ti++) {
     if (!trackMask[ti]) continue;
     const track = newEvents[ti];
     for (const ev of track) {
       if (ev.type !== 'noteOn') continue;
-      const isBass = (ev.channel === 1 || ev.pitch < 48);
+      const isBass = isBassNote(ev);
       const group = ev._group;
 
       if (group && preserveChords) {
@@ -616,7 +627,7 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
         if (group._processed) continue;
         group._processed = true;
         const earliest = group.reduce((min, n) => n.tick < min.tick ? n : min, group[0]);
-        const isBassGroup = group.some(n => n.channel === 1 || n.pitch < 48);
+        const isBassGroup = group.some(n => isBassNote(n));
         const avgVel = group.reduce((s, n) => s + n.velocity, 0) / group.length;
         let shift = 0, velShift = 0;
         if (mode === 'timing' || mode === 'both') {
@@ -1384,7 +1395,7 @@ invalidateApply();
 document.getElementById('playAfterBtn').disabled = true;
 document.getElementById('exportBtn').disabled = true;
 
-console.log('MIDI Groove Extractor Pro v5.0 ready — direct offset transfer, no stacked attenuation, bass cap, audible 50%, chord lock independent of strength.');
+console.log('MIDI Groove Extractor Pro v5.1 ready — fixed: channel-10 percussion (and any note < pitch 48) was being silently capped by Bass Max Shift instead of Max Timing Shift, muting most drum-groove results regardless of strength; drum channel is now always exempt, and Drum-aware mode is wired up to extend that exemption to other channels.');
 </script>
 </body>
 </html>
