@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
-<title>MIDI Groove Extractor Pro v4.5</title>
+<title>MIDI Groove Extractor Pro v5.0</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f2f4f8;color:#1a1e2c;touch-action:manipulation}
@@ -30,6 +30,7 @@ button:disabled{opacity:.5;pointer-events:none}
 .status{padding:8px 12px;border-radius:8px;background:#f3f4f6;font-size:14px;color:#374151;margin:8px 0;word-break:break-word}
 .status.ok{background:#d1fae5;color:#065f46}
 .status.err{background:#fecaca;color:#991b1b}
+.status.warn{background:#fef3c7;color:#92400e}
 .flex{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .flex>*{flex:1;min-width:80px}
 .canvas-wrap{position:relative;background:#fafbfc;border-radius:8px;border:1px solid #e5e7eb;overflow:auto;max-height:400px}
@@ -54,7 +55,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
 <body>
 <div class="app" id="app">
   <header>
-    <h1>MIDI Groove Extractor <small>Pro v4.5</small></h1>
+    <h1>MIDI Groove Extractor <small>Pro v5.0</small></h1>
   </header>
 
   <div class="tabs" id="tabs">
@@ -110,11 +111,12 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
           <option value="velocity">Velocity only</option>
         </select>
       </div>
-      <div><label>Max Timing Shift (ms)</label><input id="maxShift" type="number" value="30" min="0" step="1"></div>
+      <div><label>Max Timing Shift (ms)</label><input id="maxShift" type="number" value="70" min="0" step="1"></div>
+      <div><label>Bass Max Shift (ms)</label><input id="bassMaxShift" type="number" value="20" min="0" step="1"></div>
     </div>
     <div class="row">
-      <label><input type="checkbox" id="preserveChords" checked> Preserve chords</label>
-      <label><input type="checkbox" id="preserveBass" checked> Protect bass (reduced effect)</label>
+      <label><input type="checkbox" id="preserveChords" checked> Chord Lock (move chord notes together)</label>
+      <label><input type="checkbox" id="preserveBass" checked> Bass protection (cap extreme movement)</label>
       <label><input type="checkbox" id="drumMode"> Drum‑aware mode</label>
     </div>
     <div class="track-check" id="trackSelection">
@@ -122,7 +124,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
       <span id="trackList">(load target)</span>
     </div>
     <button id="applyBtn">⚡ Apply / Reapply from Original</button>
-    <div class="status" style="font-size:12px">Every application starts from the originally loaded target MIDI, so changing a setting never compounds or reuses an older result.</div>
+    <div class="status" style="font-size:12px">Every application starts from the originally loaded target MIDI, so changing a setting never compounds or reuses an older result. 100% strength reproduces the extracted timing exactly (clamped only by Max Timing Shift).</div>
     <div id="applyResult" class="status"></div>
     <div class="canvas-wrap">
       <canvas id="pianoRollAfter"></canvas>
@@ -142,6 +144,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
 
   <div id="panel-export" class="panel">
     <h2>Export Grooved MIDI</h2>
+    <div id="exportMovement" class="status" style="display:none"></div>
     <button id="exportBtn">⬇️ Download MIDI</button>
     <div id="exportStatus" class="status">Apply a groove first.</div>
     <p class="status" style="font-size:13px;background:#f0f0f0;">All processing is local; files never leave your device.</p>
@@ -196,7 +199,7 @@ function writeVarLen(v) {
 }
 function readU16(data, pos) { return (data[pos] << 8) | data[pos+1]; }
 function readU32(data, pos) {
-  return ((data[pos] << 24) | (data[pos+1] << 16) | (data[pos+2] << 8) | data[pos+3]) >>> 0;
+  return ((data[pos] << 24) | (data[pos+1] << 16) | (data[pos+2] << 8) | (data[pos+3]) >>> 0);
 }
 function writeU16(v) { return [(v >> 8) & 0xff, v & 0xff]; }
 function writeU32(v) { return [(v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff]; }
@@ -227,13 +230,12 @@ function parseMidi(data) {
 }
 
 function midiTracksToEvents(trackChunks, division) {
-  // Returns array of arrays of event objects with absolute tick and stable note IDs.
   const result = [];
   let globalNoteId = 0;
   for (const chunk of trackChunks) {
     const events = [];
     let tick = 0, running = 0, i = 0;
-    const activeNotes = new Map(); // key -> stack of { noteId, startTick }
+    const activeNotes = new Map();
     while (i < chunk.length) {
       const r = readVarLen(chunk, i);
       tick += r.value;
@@ -245,7 +247,6 @@ function midiTracksToEvents(trackChunks, division) {
       } else {
         running = status;
       }
-      // SysEx
       if (status === 0xf0 || status === 0xf7) {
         const r2 = readVarLen(chunk, i);
         const data = chunk.slice(r2.pos, r2.pos + r2.value);
@@ -253,7 +254,6 @@ function midiTracksToEvents(trackChunks, division) {
         events.push({ tick, type: 'sysex', status, data });
         continue;
       }
-      // Meta event
       if (status === 0xff) {
         const metaType = chunk[i++];
         const r2 = readVarLen(chunk, i);
@@ -274,16 +274,15 @@ function midiTracksToEvents(trackChunks, division) {
         events.push({ tick, type: 'pressure', channel, pressure });
         continue;
       }
-      // Two-byte events
       const p1 = chunk[i++];
       const p2 = chunk[i++];
-      if (type === 0x90 && p2 > 0) { // note on
+      if (type === 0x90 && p2 > 0) {
         const noteId = globalNoteId++;
         const key = channel + ':' + p1;
         if (!activeNotes.has(key)) activeNotes.set(key, []);
         activeNotes.get(key).push({ noteId, startTick: tick });
         events.push({ tick, type: 'noteOn', channel, pitch: p1, velocity: p2, noteId, startTick: tick });
-      } else if (type === 0x80 || (type === 0x90 && p2 === 0)) { // note off
+      } else if (type === 0x80 || (type === 0x90 && p2 === 0)) {
         const key = channel + ':' + p1;
         const stack = activeNotes.get(key);
         if (stack && stack.length) {
@@ -298,11 +297,9 @@ function midiTracksToEvents(trackChunks, division) {
       } else if (type === 0xa0) {
         events.push({ tick, type: 'polyAftertouch', channel, pitch: p1, pressure: p2 });
       } else {
-        // Preserve unknown events as raw bytes
         events.push({ tick, type: 'raw', data: [status, p1, p2] });
       }
     }
-    // Close hanging notes
     for (const [key, stack] of activeNotes) {
       const parts = key.split(':');
       const ch = parseInt(parts[0]), pitch = parseInt(parts[1]);
@@ -311,7 +308,6 @@ function midiTracksToEvents(trackChunks, division) {
       }
     }
     events.sort((a,b) => a.tick - b.tick);
-    // Assign original order for stable sorting
     events.forEach((e, idx) => e._order = idx);
     result.push(events);
   }
@@ -319,22 +315,17 @@ function midiTracksToEvents(trackChunks, division) {
 }
 
 function buildMidiFromEvents(eventsPerTrack, division, format) {
-  // eventsPerTrack: array of arrays of event objects with absolute tick
   const trackChunks = [];
   for (const events of eventsPerTrack) {
-    // Remove any existing end-of-track meta events
     const filtered = events.filter(e => !(e.type === 'meta' && e.metaType === 0x2f));
-    // Sort by tick, then by stable order (note-off before note-on at same tick)
     const sorted = filtered.slice().sort((a,b) => {
       if (a.tick !== b.tick) return a.tick - b.tick;
-      // note-off before note-on
       const order = { noteOff: 0, control: 1, pitchBend: 1, program: 1, pressure: 1, polyAftertouch: 1, meta: 2, sysex: 2, noteOn: 3, raw: 4 };
       const pa = order[a.type] || 0;
       const pb = order[b.type] || 0;
       if (pa !== pb) return pa - pb;
       return (a._order || 0) - (b._order || 0);
     });
-    // Build track data
     let data = [];
     let lastTick = 0;
     for (const ev of sorted) {
@@ -365,12 +356,10 @@ function buildMidiFromEvents(eventsPerTrack, division, format) {
       }
       lastTick = ev.tick;
     }
-    // Append end-of-track
     data.push(...writeVarLen(0), 0xff, 0x2f, 0);
     const chunk = new Uint8Array([0x4d, 0x54, 0x72, 0x6b, ...writeU32(data.length), ...data]);
     trackChunks.push(chunk);
   }
-  // Header: preserve format if possible (0 or 1), else default to 1
   const outFormat = (format === 0 && trackChunks.length === 1) ? 0 : 1;
   const header = new Uint8Array([0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, outFormat, ...writeU16(trackChunks.length), ...writeU16(division)]);
   const totalLen = header.length + trackChunks.reduce((s,c) => s + c.length, 0);
@@ -385,13 +374,9 @@ function buildMidiFromEvents(eventsPerTrack, division, format) {
 }
 
 // --------------------------------------------------------------------
-//  GROOVE ANALYSIS (fixed swing, time signature awareness)
+//  GROOVE ANALYSIS (fixed swing, time signature awareness, magnitude)
 // --------------------------------------------------------------------
 function chooseGrooveStep(barTick, stepTicks, stepCount) {
-  // Prefer an eighth-note anchor when a note is plausibly a swung eighth.
-  // The old nearest-16th calculation misclassified a swung offbeat (for
-  // example tick 320 at 480 PPQ) as sixteenth step 3 instead of step 2,
-  // leaving the target offbeat with a zero groove offset.
   const beatTicks = stepTicks * 4;
   const nearest16 = Math.round(barTick / stepTicks);
   const nearest8 = Math.round(barTick / (stepTicks * 2)) * 2;
@@ -402,7 +387,6 @@ function chooseGrooveStep(barTick, stepTicks, stepCount) {
 }
 
 function analyzeGroove(eventsPerTrack, division) {
-  // Extract noteOns from all tracks (or later we can limit to selected track)
   const noteOns = [];
   for (const track of eventsPerTrack) {
     for (const ev of track) {
@@ -414,7 +398,7 @@ function analyzeGroove(eventsPerTrack, division) {
   if (!noteOns.length) throw new Error('No note events found in source.');
 
   const ticksPerBeat = division;
-  const ticksPerBar = ticksPerBeat * 4; // assume 4/4 for now, but we'll parse meta later
+  const ticksPerBar = ticksPerBeat * 4;
   const stepsPerBar = 16;
   const stepTicks = ticksPerBar / stepsPerBar;
   const profile = [];
@@ -433,17 +417,14 @@ function analyzeGroove(eventsPerTrack, division) {
     profile[step].hits++;
   }
 
-  // Compute robust statistics (median for offset, trimmed mean for velocity)
   const stepData = profile.map(s => {
     const offs = s.offsets;
     const vels = s.velocities;
-    // Median offset
     let medOff = 0;
     if (offs.length) {
       const sorted = offs.slice().sort((a,b)=>a-b);
       medOff = sorted[Math.floor(sorted.length/2)];
     }
-    // Trimmed mean velocity (remove top/bottom 10%)
     let avgVel = 0;
     if (vels.length) {
       const sorted = vels.slice().sort((a,b)=>a-b);
@@ -455,14 +436,11 @@ function analyzeGroove(eventsPerTrack, division) {
     return { offset: medOff, avgVel, devVel, hits: vels.length };
   });
 
-  // Swing: conventional scale (50% = straight)
   let swingSum = 0, swingCount = 0;
   for (let beat = 0; beat < 4; beat++) {
     const onStep = beat * 4;
     const offStep = beat * 4 + 2;
     if (stepData[offStep].hits > 0 && stepData[onStep].hits > 0) {
-      // Swing percentage is the offbeat onset as a percentage of the beat:
-      // straight eighths = 50%, triplet swing = about 66.7%.
       const onOff = stepData[onStep].offset;
       const offOff = stepData[offStep].offset;
       const actualOff = stepTicks * 2 + offOff - onOff;
@@ -473,9 +451,6 @@ function analyzeGroove(eventsPerTrack, division) {
   }
   const swingPercent = swingCount > 0 ? (swingSum / swingCount) : 50;
 
-  // Fill empty steps from equivalent subdivisions in other beats. Sparse source
-  // clips otherwise leave most target notes with a zero offset and no velocity
-  // character. Priority: same subdivision (step % 4), then nearest populated step.
   for (let i = 0; i < stepData.length; i++) {
     if (stepData[i].hits > 0) continue;
     const sameSubdivision = stepData
@@ -495,8 +470,6 @@ function analyzeGroove(eventsPerTrack, division) {
     }
   }
 
-  // Build a musically useful swing fallback. This ensures an extracted swung
-  // eighth feel transfers even when the source has no note on every offbeat.
   const swingDelay = (swingPercent / 100 * ticksPerBeat) - (ticksPerBeat / 2);
   for (let beat = 0; beat < 4; beat++) {
     const off8 = beat * 4 + 2;
@@ -504,6 +477,32 @@ function analyzeGroove(eventsPerTrack, division) {
       stepData[off8].offset = swingDelay;
       stepData[off8].inferred = true;
     }
+  }
+
+  // ---- Groove magnitude (RMS of offsets) at 120 BPM reference, in ms ----
+  let sumSq = 0, count = 0;
+  for (const s of stepData) {
+    if (s.hits > 0) { sumSq += s.offset * s.offset; count++; }
+  }
+  const rmsOffsetTicks = count ? Math.sqrt(sumSq / count) : 0;
+  const refTicksPerSec = division * 2; // 120 BPM
+  let grooveMagnitudeMs = rmsOffsetTicks / refTicksPerSec * 1000;
+
+  // ---- Normalise very weak grooves / warn (fix 7) ----
+  let normalized = false;
+  let warning = '';
+  const MIN_MAGNITUDE_MS = 3;
+  const TARGET_MAGNITUDE_MS = 12;
+  if (grooveMagnitudeMs > 0.01 && grooveMagnitudeMs < MIN_MAGNITUDE_MS) {
+    const scale = TARGET_MAGNITUDE_MS / grooveMagnitudeMs;
+    for (const s of stepData) {
+      if (s.hits > 0 || s.inferred) s.offset = Math.round(s.offset * scale);
+    }
+    normalized = true;
+    warning = `Source groove was very weak (${grooveMagnitudeMs.toFixed(1)} ms RMS). Offsets normalised to ~${TARGET_MAGNITUDE_MS} ms so the groove is audible. Use lower Timing Strength for a subtler result.`;
+    grooveMagnitudeMs = TARGET_MAGNITUDE_MS;
+  } else if (grooveMagnitudeMs <= 0.01) {
+    warning = 'Source contains minimal timing variation — the extracted groove will be inaudible regardless of strength.';
   }
 
   return {
@@ -514,24 +513,35 @@ function analyzeGroove(eventsPerTrack, division) {
     swingPercent,
     totalNotes: noteOns.length,
     avgVelocity: noteOns.reduce((s,n) => s + n.velocity, 0) / noteOns.length,
-    stepCount: stepsPerBar
+    stepCount: stepsPerBar,
+    grooveMagnitudeMs,
+    normalized,
+    warning
   };
 }
 
 // --------------------------------------------------------------------
-//  GROOVE APPLICATION  (fixed: neutral at 0%, preserve noteIds, resort)
+//  GROOVE APPLICATION (v5: direct offset, no stacked attenuation,
+//  bass cap, non-linear strength, chord lock independent of strength)
 // --------------------------------------------------------------------
-function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, mode, preserveChords, preserveBass, drumMode, maxShiftMs, trackMask, targetDivision, tempo) {
-  // Clone events per track
+function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, mode, preserveChords, preserveBass, drumMode, maxShiftMs, bassMaxShiftMs, trackMask, targetDivision, tempo) {
   const newEvents = eventsPerTrack.map(track => track.map(ev => { const c = { ...ev }; delete c._group; delete c._processed; return c; }));
-  // Compute max shift in ticks from milliseconds
   const ticksPerSecond = targetDivision * (tempo / 60);
   const maxShiftTicks = Math.round(maxShiftMs / 1000 * ticksPerSecond);
+  const bassMaxShiftTicks = Math.round(bassMaxShiftMs / 1000 * ticksPerSecond);
+
+  // Non-linear strength curve (fix 5): 100% = exact, 50% ≈ 70% of shift (audible)
+  function strengthCurve(s) {
+    let t = s / 100;
+    if (t >= 1) return 1;
+    if (t <= 0) return 0;
+    return Math.pow(t, 0.5); // sqrt: 0.5 -> ~0.707, 0.25 -> 0.5
+  }
+  const tFactor = strengthCurve(timingStr);
 
   // Build chord groups (per track and channel)
   const chordGroups = [];
   if (preserveChords) {
-    // For each track and channel, group note ons by onset time
     for (let ti = 0; ti < newEvents.length; ti++) {
       if (!trackMask[ti]) continue;
       const track = newEvents[ti];
@@ -556,77 +566,67 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
         if (current.length > 1) chordGroups.push(current);
       }
     }
-    // Mark processed groups
     for (const group of chordGroups) {
       for (const n of group) n._group = group;
     }
   }
 
-  // Helper: apply timing interpolation
-  function applyTiming(tick, profile, strength) {
-    const ticksPerBar = profile.ticksPerBar;
+  // Apply timing: source offset transferred directly onto the target grid.
+  // Clamped only by the user ceiling (maxShiftTicks) — no hidden limiter,
+  // no flat bass attenuation. Bass uses a tighter cap (fix 1, 2, 3).
+  function applyTiming(tick, isBass) {
+    const ticksPerBar = sourceProfile.ticksPerBar;
     const bar = Math.floor(tick / ticksPerBar);
     const barTick = tick - bar * ticksPerBar;
-    const step = chooseGrooveStep(barTick, profile.stepTicks, profile.stepCount);
-    const gridTick = step * profile.stepTicks;
-    const sourceOffset = Number(profile.profile[step]?.offset || 0);
-
-    // Transfer the source deviation onto the target's nearest musical grid.
-    // This is deliberately not a pull toward bar 1 and not a no-op on sparse
-    // profiles. At 100%, the target onset becomes grid + source deviation.
+    const step = chooseGrooveStep(barTick, sourceProfile.stepTicks, sourceProfile.stepCount);
+    const gridTick = step * sourceProfile.stepTicks;
+    const sourceOffset = Number(sourceProfile.profile[step]?.offset || 0);
     const absoluteGrid = bar * ticksPerBar + gridTick;
-    const desiredTick = absoluteGrid + sourceOffset;
-    const requestedShift = (desiredTick - tick) * (strength / 100);
-    const clampedShift = clamp(requestedShift, -maxShiftTicks, maxShiftTicks);
-    return tick + clampedShift;
+    const desiredTick = absoluteGrid + sourceOffset; // 100% target position
+    const rawShift = desiredTick - tick;
+    const shift = rawShift * tFactor;
+    const cap = (preserveBass && isBass) ? bassMaxShiftTicks : maxShiftTicks;
+    return tick + clamp(shift, -cap, cap);
   }
 
-  function applyVelocity(vel, tick, profile, strength) {
-    const ticksPerBar = profile.ticksPerBar;
+  function applyVelocity(vel, tick) {
+    const ticksPerBar = sourceProfile.ticksPerBar;
     const bar = Math.floor(tick / ticksPerBar);
     const barTick = tick - bar * ticksPerBar;
-    const step = chooseGrooveStep(barTick, profile.stepTicks, profile.stepCount);
-    const avg = profile.profile[step].avgVel;
+    const step = chooseGrooveStep(barTick, sourceProfile.stepTicks, sourceProfile.stepCount);
+    const avg = sourceProfile.profile[step].avgVel;
     if (avg === 0) return vel;
-    const diff = avg - profile.avgVelocity;
-    const newVel = vel + diff * (strength / 100);
+    const diff = avg - sourceProfile.avgVelocity;
+    const newVel = vel + diff * (velStr / 100);
     return clamp(Math.round(newVel), 1, 127);
   }
 
-  // Process tracks
   for (let ti = 0; ti < newEvents.length; ti++) {
     if (!trackMask[ti]) continue;
     const track = newEvents[ti];
-    // First pass: collect noteOns and apply changes
     for (const ev of track) {
       if (ev.type !== 'noteOn') continue;
-      // Bass protection should reduce the groove, not bypass it entirely.
-      // The previous version skipped every note below middle C, which meant many
-      // bass, chord and left-hand target files were exported unchanged.
       const isBass = (ev.channel === 1 || ev.pitch < 48);
-      const isDrum = (ev.channel === 9);
-      const timingFactor = (preserveBass && isBass) ? 0.45 : 1;
-      const velocityFactor = (preserveBass && isBass) ? 0.55 : 1;
-      // Drum-aware mode keeps drum chords/hits together but still applies groove.
-      // It must not skip channel 10 notes.
-
       const group = ev._group;
+
       if (group && preserveChords) {
-        // Process the whole group together
+        // Chord Lock (fix 6): determine the shift from the earliest note's
+        // grid step and apply the SAME delta to every member. Chord Lock no
+        // longer weakens the movement — it only guarantees notes move together.
         if (group._processed) continue;
         group._processed = true;
-        const avgTick = group.reduce((s, n) => s + n.tick, 0) / group.length;
+        const earliest = group.reduce((min, n) => n.tick < min.tick ? n : min, group[0]);
+        const isBassGroup = group.some(n => n.channel === 1 || n.pitch < 48);
         const avgVel = group.reduce((s, n) => s + n.velocity, 0) / group.length;
-        let newAvgTick = avgTick;
-        let newAvgVel = avgVel;
+        let shift = 0, velShift = 0;
         if (mode === 'timing' || mode === 'both') {
-          newAvgTick = applyTiming(avgTick, sourceProfile, timingStr * timingFactor);
+          const newEarliestTick = applyTiming(earliest.tick, isBassGroup);
+          shift = newEarliestTick - earliest.tick;
         }
         if (mode === 'velocity' || mode === 'both') {
-          newAvgVel = applyVelocity(avgVel, avgTick, sourceProfile, velStr * velocityFactor);
+          const newAvgVel = applyVelocity(avgVel, earliest.tick);
+          velShift = newAvgVel - avgVel;
         }
-        const shift = newAvgTick - avgTick;
-        const velShift = newAvgVel - avgVel;
         for (const n of group) {
           if (mode === 'timing' || mode === 'both') {
             n.tick = Math.max(0, Math.round(n.tick + shift));
@@ -638,14 +638,14 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
         continue;
       }
 
-      // Individual note
+      // Individual note — no stacked attenuation (fix 2), bass capped not flattened (fix 3)
       let newTick = ev.tick, newVel = ev.velocity;
       if (mode === 'timing' || mode === 'both') {
-        newTick = applyTiming(ev.tick, sourceProfile, timingStr * timingFactor);
+        newTick = applyTiming(ev.tick, isBass);
         newTick = Math.max(0, newTick);
       }
       if (mode === 'velocity' || mode === 'both') {
-        newVel = applyVelocity(ev.velocity, ev.tick, sourceProfile, velStr * velocityFactor);
+        newVel = applyVelocity(ev.velocity, ev.tick);
       }
       ev.tick = Math.round(newTick);
       ev.velocity = newVel;
@@ -666,7 +666,6 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
       if (ev.type === 'noteOff') {
         const on = noteOnMap.get(ev.noteId);
         if (on) {
-          // Preserve duration
           const dur = ev.tick - ev.startTick;
           ev.tick = on.tick + dur;
           ev.startTick = on.tick;
@@ -675,7 +674,6 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     }
   }
 
-  // Resort each track by tick and stable order
   for (let ti = 0; ti < newEvents.length; ti++) {
     newEvents[ti].sort((a,b) => {
       if (a.tick !== b.tick) return a.tick - b.tick;
@@ -687,8 +685,6 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     });
   }
 
-  // Record exactly how much changed so the UI can warn when the source
-  // groove is effectively straight/flat or protection settings are too strong.
   let movedNotes = 0, velocityChanged = 0, maxMoveTicks = 0, totalMoveTicks = 0;
   for (let ti = 0; ti < newEvents.length; ti++) {
     const beforeTrack = eventsPerTrack[ti] || [];
@@ -753,6 +749,7 @@ sourceFile.addEventListener('change', async (e) => {
       <div class="stat"><span class="label">Tracks</span><div class="value">${events.length}</div></div>
       <div class="stat"><span class="label">PPQ</span><div class="value">${parsed.division}</div></div>
       <div class="stat"><span class="label">Swing</span><div class="value">${sourceGroove.swingPercent.toFixed(1)}%</div></div>
+      <div class="stat"><span class="label">Groove</span><div class="value">${sourceGroove.grooveMagnitudeMs.toFixed(1)} ms</div></div>
       <div class="stat"><span class="label">Notes</span><div class="value">${sourceGroove.totalNotes}</div></div>
     `;
     updateAnalysis();
@@ -771,11 +768,19 @@ function updateAnalysis() {
     return;
   }
   const g = sourceGroove;
-  document.getElementById('analysisStatus').textContent = 'Analysis complete.';
-  document.getElementById('analysisStatus').className = 'status ok';
+  const statusEl = document.getElementById('analysisStatus');
+  if (g.warning) {
+    statusEl.textContent = 'Analysis complete — ' + g.warning;
+    statusEl.className = g.normalized ? 'status warn' : 'status warn';
+  } else {
+    statusEl.textContent = 'Analysis complete.';
+    statusEl.className = 'status ok';
+  }
   document.getElementById('grooveStats').innerHTML = `
     <div class="stat"><span class="label">Swing</span><div class="value">${g.swingPercent.toFixed(1)}%</div></div>
     <div class="stat"><span class="label">Avg Velocity</span><div class="value">${g.avgVelocity.toFixed(0)}</div></div>
+    <div class="stat"><span class="label">Groove magnitude</span><div class="value">${g.grooveMagnitudeMs.toFixed(1)} ms</div></div>
+    <div class="stat"><span class="label">Normalised</span><div class="value">${g.normalized ? 'Yes' : 'No'}</div></div>
     <div class="stat"><span class="label">Step resolution</span><div class="value">${g.stepCount}</div></div>
     <div class="stat"><span class="label">Total notes</span><div class="value">${g.totalNotes}</div></div>
   `;
@@ -847,7 +852,6 @@ targetFile.addEventListener('change', async (e) => {
     targetDivision = parsed.division;
     targetFormat = parsed.format;
     targetFileName = file.name;
-    // Find initial tempo from meta events
     let tempo = 120;
     for (const track of events) {
       for (const ev of track) {
@@ -870,7 +874,6 @@ targetFile.addEventListener('change', async (e) => {
     `;
     document.getElementById('applyStatus').textContent = 'Target loaded. Ready to apply.';
     document.getElementById('applyStatus').className = 'status ok';
-    // Populate track selection with track names
     const container = document.getElementById('trackSelection');
     container.innerHTML = '<span style="font-weight:600;margin-right:8px;">Apply to tracks:</span><span id="trackList"></span>';
     const trackList = document.getElementById('trackList');
@@ -895,6 +898,7 @@ targetFile.addEventListener('change', async (e) => {
 
 function invalidateApply() {
   appliedEvents = null;
+  document.getElementById('exportMovement').style.display = 'none';
   document.getElementById('exportStatus').textContent = 'Apply a groove first.';
   document.getElementById('exportStatus').className = 'status';
   document.getElementById('applyResult').textContent = '';
@@ -906,7 +910,7 @@ function invalidateApply() {
 }
 
 // ----------------------- Apply / Reapply -----------------------
-const grooveSettingIds = ['timingStrength','velStrength','applyMode','maxShift','preserveChords','preserveBass','drumMode'];
+const grooveSettingIds = ['timingStrength','velStrength','applyMode','maxShift','bassMaxShift','preserveChords','preserveBass','drumMode'];
 for (const id of grooveSettingIds) {
   const el = document.getElementById(id);
   if (!el) continue;
@@ -916,6 +920,7 @@ for (const id of grooveSettingIds) {
       document.getElementById('applyResult').className = 'status';
       document.getElementById('exportStatus').textContent = 'Result is out of date. Reapply before export.';
       document.getElementById('exportStatus').className = 'status';
+      document.getElementById('exportMovement').style.display = 'none';
       document.getElementById('exportBtn').disabled = true;
       document.getElementById('playAfterBtn').disabled = true;
     }
@@ -944,13 +949,12 @@ document.getElementById('applyBtn').addEventListener('click', () => {
     const preserveChords = document.getElementById('preserveChords').checked;
     const preserveBass = document.getElementById('preserveBass').checked;
     const drumMode = document.getElementById('drumMode').checked;
-    const maxShiftMs = parseFloat(document.getElementById('maxShift').value) || 30;
+    const maxShiftMs = parseFloat(document.getElementById('maxShift').value) || 70;
+    const bassMaxShiftMs = parseFloat(document.getElementById('bassMaxShift').value) || 20;
 
-    // Build track mask
     const checks = document.querySelectorAll('.trackCheck');
     const trackMask = checks.length ? Array.from(checks).map(c => c.checked) : targetEvents.map(() => true);
 
-    // Scale source profile to target PPQ and tempo
     const targetTicksPerBar = targetDivision * 4;
     const sourceTicksPerBar = sourceGroove.ticksPerBar;
     const stepRatio = (targetTicksPerBar / sourceTicksPerBar);
@@ -974,6 +978,7 @@ document.getElementById('applyBtn').addEventListener('click', () => {
       preserveBass,
       drumMode,
       maxShiftMs,
+      bassMaxShiftMs,
       trackMask,
       targetDivision,
       targetTempo
@@ -987,13 +992,27 @@ document.getElementById('applyBtn').addEventListener('click', () => {
     const avgMoveMs = ticksPerSecondForStats
       ? Math.round(changeStats.avgMoveTicks / ticksPerSecondForStats * 1000)
       : 0;
-    if (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) {
+
+    // ---- Apply result message ----
+    if (sourceGroove.warning && !sourceGroove.normalized) {
+      document.getElementById('applyResult').textContent = sourceGroove.warning;
+      document.getElementById('applyResult').className = 'status warn';
+    } else if (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) {
       document.getElementById('applyResult').textContent = 'No change was produced. Check that the chosen target tracks contain notes. For a stronger result, increase Timing/Velocity Strength, raise Max Timing Shift, or turn off bass protection.';
+      document.getElementById('applyResult').className = 'status err';
     } else {
-      document.getElementById('applyResult').textContent = `Fresh reapply from original target: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, average shift ${avgMoveMs} ms, maximum shift ${maxMoveMs} ms.`;
+      let msg = `Fresh reapply from original target: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, average shift ${avgMoveMs} ms, maximum shift ${maxMoveMs} ms.`;
+      if (sourceGroove.normalized) msg += ' (Source groove was normalised — see Analysis.)';
+      document.getElementById('applyResult').textContent = msg;
+      document.getElementById('applyResult').className = 'status ok';
     }
-    document.getElementById('applyResult').className = (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) ? 'status err' : 'status ok';
-    // Draw after piano roll
+
+    // ---- Effective timing movement shown before export (fix 8) ----
+    const moveEl = document.getElementById('exportMovement');
+    moveEl.style.display = 'block';
+    moveEl.className = 'status ok';
+    moveEl.textContent = `Effective timing movement — average: ${avgMoveMs} ms, maximum: ${maxMoveMs} ms across ${changeStats.movedNotes} notes.`;
+
     const notes = extractNoteOns(appliedEvents);
     drawPianoRoll(document.getElementById('pianoRollAfter'), notes, targetDivision);
     document.getElementById('exportStatus').textContent = 'Grooved MIDI ready for export.';
@@ -1046,7 +1065,7 @@ document.getElementById('saveGrooveBtn').addEventListener('click', () => {
     id: uid(),
     name: 'Groove ' + (grooveLibrary.length + 1),
     format: 'groove',
-    version: '1.0',
+    version: '1.1',
     sourcePPQ: sourceDivision,
     timeSignature: '4/4',
     resolution: 16,
@@ -1057,7 +1076,9 @@ document.getElementById('saveGrooveBtn').addEventListener('click', () => {
     analysis: {
       swingPercent: sourceGroove.swingPercent,
       avgVelocity: sourceGroove.avgVelocity,
-      totalNotes: sourceGroove.totalNotes
+      totalNotes: sourceGroove.totalNotes,
+      grooveMagnitudeMs: sourceGroove.grooveMagnitudeMs,
+      normalized: sourceGroove.normalized
     }
   };
   grooveLibrary.push(grooveObj);
@@ -1080,17 +1101,13 @@ document.getElementById('loadGrooveFile').addEventListener('change', async (e) =
   try {
     const text = await file.text();
     const obj = JSON.parse(text);
-    // Validate schema
     if (!obj || typeof obj !== 'object') throw new Error('Invalid JSON');
     if (obj.format !== 'groove' || !obj.version) throw new Error('Invalid groove format');
-    if (obj.version !== '1.0') throw new Error('Unsupported version');
     if (!Array.isArray(obj.timingOffsets) || !Array.isArray(obj.velocityDeviations) || !Array.isArray(obj.sampleCounts))
       throw new Error('Missing arrays');
     if (obj.timingOffsets.length !== obj.velocityDeviations.length || obj.timingOffsets.length !== obj.sampleCounts.length)
       throw new Error('Array length mismatch');
     if (typeof obj.sourcePPQ !== 'number' || obj.sourcePPQ < 1) throw new Error('Invalid PPQ');
-    if (typeof obj.analysis?.swingPercent !== 'number') throw new Error('Missing analysis');
-    // Reconstruct
     const profile = obj.timingOffsets.map((off, i) => ({
       offset: off,
       avgVel: (obj.velocityDeviations[i] || 0) + (obj.analysis?.avgVelocity || 100),
@@ -1103,10 +1120,13 @@ document.getElementById('loadGrooveFile').addEventListener('change', async (e) =
       ticksPerBar: obj.sourcePPQ * 4,
       stepTicks: obj.sourcePPQ * 4 / 16,
       profile: profile,
-      swingPercent: obj.analysis.swingPercent,
+      swingPercent: obj.analysis?.swingPercent || 50,
       totalNotes: totalNotes,
-      avgVelocity: obj.analysis.avgVelocity || 100,
-      stepCount: 16
+      avgVelocity: obj.analysis?.avgVelocity || 100,
+      stepCount: 16,
+      grooveMagnitudeMs: obj.analysis?.grooveMagnitudeMs || 0,
+      normalized: obj.analysis?.normalized || false,
+      warning: ''
     };
     sourceDivision = obj.sourcePPQ;
     if (!grooveLibrary.find(g => g.id === obj.id)) {
@@ -1131,8 +1151,9 @@ function updateLibraryUI() {
   list.innerHTML = grooveLibrary.map((g, i) => {
     const name = g.name.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c] || c));
     const swing = g.analysis?.swingPercent?.toFixed(1) || '?';
+    const mag = g.analysis?.grooveMagnitudeMs != null ? g.analysis.grooveMagnitudeMs.toFixed(1) + ' ms' : '?';
     return `<div class="library-item">
-      <span>${name} (${g.sampleCounts?.reduce((a,b) => a + b, 0) || 0} notes, ${swing}% swing)</span>
+      <span>${name} (${g.sampleCounts?.reduce((a,b) => a + b, 0) || 0} notes, ${swing}% swing, ${mag})</span>
       <div>
         <button class="secondary" data-load="${i}">Load</button>
         <button class="danger" data-delete="${i}">✕</button>
@@ -1159,7 +1180,10 @@ function updateLibraryUI() {
           swingPercent: g.analysis?.swingPercent || 50,
           totalNotes: totalNotes,
           avgVelocity: g.analysis?.avgVelocity || 100,
-          stepCount: 16
+          stepCount: 16,
+          grooveMagnitudeMs: g.analysis?.grooveMagnitudeMs || 0,
+          normalized: g.analysis?.normalized || false,
+          warning: ''
         };
         sourceDivision = g.sourcePPQ || 480;
         document.getElementById('libraryStatus').textContent = 'Loaded groove: ' + g.name;
@@ -1177,7 +1201,7 @@ function updateLibraryUI() {
   });
 }
 
-// ----------------------- Playback (fixed) -----------------------
+// ----------------------- Playback -----------------------
 function playEvents(eventsPerTrack, type) {
   stopPlayback();
   if (!audioCtx) {
@@ -1188,10 +1212,7 @@ function playEvents(eventsPerTrack, type) {
   const allNotes = [];
   for (const track of eventsPerTrack) {
     for (const ev of track) {
-      if (ev.type === 'noteOn') {
-        // We need note off to get duration; we'll collect noteOffs and match by noteId
-        allNotes.push(ev);
-      }
+      if (ev.type === 'noteOn') allNotes.push(ev);
     }
   }
   if (!allNotes.length) {
@@ -1200,13 +1221,10 @@ function playEvents(eventsPerTrack, type) {
     return;
   }
 
-  // Build note pairs with durations
   const noteMap = new Map();
   for (const track of eventsPerTrack) {
     for (const ev of track) {
-      if (ev.type === 'noteOn') {
-        noteMap.set(ev.noteId, { on: ev, off: null });
-      }
+      if (ev.type === 'noteOn') noteMap.set(ev.noteId, { on: ev, off: null });
       if (ev.type === 'noteOff') {
         const entry = noteMap.get(ev.noteId);
         if (entry) entry.off = ev;
@@ -1216,7 +1234,7 @@ function playEvents(eventsPerTrack, type) {
   const pairs = [];
   for (const [id, entry] of noteMap) {
     if (entry.on) {
-      const dur = entry.off ? (entry.off.tick - entry.on.tick) : 240; // fallback
+      const dur = entry.off ? (entry.off.tick - entry.on.tick) : 240;
       pairs.push({ tick: entry.on.tick, pitch: entry.on.pitch, velocity: entry.on.velocity, duration: Math.max(24, dur) });
     }
   }
@@ -1226,7 +1244,6 @@ function playEvents(eventsPerTrack, type) {
     return;
   }
 
-  // Compute total duration in seconds using target tempo (use initial tempo for now)
   const tempo = targetTempo || 120;
   const secPerTick = 60 / (tempo * targetDivision);
   const maxTick = Math.max(...pairs.map(n => n.tick + n.duration));
@@ -1254,7 +1271,6 @@ function playEvents(eventsPerTrack, type) {
     nodes.push(osc, g);
   }
 
-  // Update playhead via requestAnimationFrame
   let rafId = null;
   let startPerf = performance.now();
   function updatePlayhead() {
@@ -1276,7 +1292,6 @@ function playEvents(eventsPerTrack, type) {
   playState.rafId = rafId;
   rafId = requestAnimationFrame(updatePlayhead);
 
-  // Clear after playback ends
   setTimeout(() => {
     if (playState.playing) stopPlayback();
   }, totalSec * 1000 + 500);
@@ -1293,7 +1308,6 @@ function stopPlayback() {
   playState.nodes = [];
   playState.playing = false;
   document.getElementById('playheadPos').style.width = '0%';
-  // Resume audio context if suspended
   if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
 }
 
@@ -1335,6 +1349,7 @@ document.getElementById('resetProject').addEventListener('click', () => {
   document.getElementById('applyResult').className = 'status';
   document.getElementById('exportStatus').textContent = 'Reset.';
   document.getElementById('exportStatus').className = 'status';
+  document.getElementById('exportMovement').style.display = 'none';
   document.getElementById('playbackStatus').textContent = 'Reset.';
   document.getElementById('playbackStatus').className = 'status';
   document.getElementById('sourceInfo').innerHTML = '';
@@ -1369,7 +1384,7 @@ invalidateApply();
 document.getElementById('playAfterBtn').disabled = true;
 document.getElementById('exportBtn').disabled = true;
 
-console.log('MIDI Groove Extractor Pro v4.5 bar-position groove fix ready.');
+console.log('MIDI Groove Extractor Pro v5.0 ready — direct offset transfer, no stacked attenuation, bass cap, audible 50%, chord lock independent of strength.');
 </script>
 </body>
 </html>
