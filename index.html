@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
-<title>MIDI Groove Extractor Pro v4</title>
+<title>MIDI Groove Extractor Pro v4.2</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f2f4f8;color:#1a1e2c;touch-action:manipulation}
@@ -54,7 +54,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
 <body>
 <div class="app" id="app">
   <header>
-    <h1>MIDI Groove Extractor <small>Pro v4</small></h1>
+    <h1>MIDI Groove Extractor <small>Pro v4.2</small></h1>
   </header>
 
   <div class="tabs" id="tabs">
@@ -432,8 +432,8 @@ function analyzeGroove(eventsPerTrack, division) {
     let avgVel = 0;
     if (vels.length) {
       const sorted = vels.slice().sort((a,b)=>a-b);
-      const trim = Math.max(1, Math.floor(sorted.length * 0.1));
-      const trimmed = sorted.slice(trim, sorted.length - trim);
+      const trim = sorted.length >= 10 ? Math.floor(sorted.length * 0.1) : 0;
+      const trimmed = sorted.slice(trim, sorted.length - trim || sorted.length);
       avgVel = trimmed.reduce((a,b)=>a+b,0) / trimmed.length;
     }
     const devVel = vels.length ? Math.sqrt(vels.reduce((a,b)=>a + (b-avgVel)**2, 0) / vels.length) : 0;
@@ -796,7 +796,8 @@ targetFile.addEventListener('change', async (e) => {
     document.getElementById('applyStatus').className = 'status ok';
     // Populate track selection with track names
     const container = document.getElementById('trackSelection');
-    container.innerHTML = '<span style="font-weight:600;margin-right:8px;">Apply to tracks:</span>';
+    container.innerHTML = '<span style="font-weight:600;margin-right:8px;">Apply to tracks:</span><span id="trackList"></span>';
+    const trackList = document.getElementById('trackList');
     events.forEach((track, i) => {
       let name = `Track ${i+1}`;
       for (const ev of track) {
@@ -807,9 +808,8 @@ targetFile.addEventListener('change', async (e) => {
       }
       const label = document.createElement('label');
       label.innerHTML = `<input type="checkbox" class="trackCheck" data-track="${i}" checked> ${name}`;
-      container.appendChild(label);
+      trackList.appendChild(label);
     });
-    document.getElementById('trackList').textContent = '';
     invalidateApply();
   } catch(err) {
     document.getElementById('targetStatus').textContent = 'Error: ' + err.message;
@@ -1256,7 +1256,7 @@ invalidateApply();
 document.getElementById('playAfterBtn').disabled = true;
 document.getElementById('exportBtn').disabled = true;
 
-console.log('MIDI Groove Extractor Pro v4 ready.');
+console.log('MIDI Groove Extractor Pro v4.2 ready.');
 </script>
 </body>
 </html>
