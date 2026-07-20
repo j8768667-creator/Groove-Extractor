@@ -1,0 +1,1262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
+<title>MIDI Groove Extractor Pro v4</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f2f4f8;color:#1a1e2c;touch-action:manipulation}
+.app{max-width:1200px;margin:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+h1{font-size:clamp(24px,5vw,36px);margin:0;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+h1 small{font-size:14px;font-weight:400;color:#6b7280}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;background:#e5e9f0;border-radius:12px;padding:4px;overflow-x:auto}
+.tab{background:transparent;border:none;padding:10px 16px;border-radius:8px;font-weight:600;font-size:14px;cursor:pointer;white-space:nowrap;transition:.2s;color:#4b5563;touch-action:manipulation}
+.tab.active{background:#fff;color:#1a1e2c;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.panel{display:none;background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 12px rgba(0,0,0,.06)}
+.panel.active{display:block}
+.row{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0}
+.row>*{flex:1;min-width:160px}
+label{display:block;font-weight:600;margin:4px 0 4px;font-size:13px;color:#374151}
+input,select,button{font:inherit;border:1px solid #d1d5db;border-radius:8px;padding:10px 12px;background:#fff;color:#1a1e2c;width:100%;touch-action:manipulation}
+input[type="file"]{padding:8px;border:2px dashed #d1d5db;background:#fafbfc;cursor:pointer}
+input[type="range"]{padding:0;height:6px;border:none;background:transparent;accent-color:#4f46e5}
+input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:#4f46e5;cursor:pointer}
+button{background:#4f46e5;color:#fff;font-weight:600;border:none;cursor:pointer;transition:.2s;touch-action:manipulation;flex-shrink:0}
+button:active{transform:scale(.96)}
+button.secondary{background:#e5e7eb;color:#1a1e2c}
+button.danger{background:#ef4444}
+button:disabled{opacity:.5;pointer-events:none}
+.status{padding:8px 12px;border-radius:8px;background:#f3f4f6;font-size:14px;color:#374151;margin:8px 0;word-break:break-word}
+.status.ok{background:#d1fae5;color:#065f46}
+.status.err{background:#fecaca;color:#991b1b}
+.flex{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.flex>*{flex:1;min-width:80px}
+.canvas-wrap{position:relative;background:#fafbfc;border-radius:8px;border:1px solid #e5e7eb;overflow:auto;max-height:400px}
+canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
+.library-list{max-height:240px;overflow-y:auto}
+.library-item{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid #e5e7eb}
+.library-item button{margin-left:8px;padding:4px 10px;font-size:13px;width:auto}
+.groove-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin:8px 0}
+.stat{background:#f9fafb;padding:8px 12px;border-radius:8px;border:1px solid #e5e7eb}
+.stat .label{font-size:11px;color:#6b7280}
+.stat .value{font-size:18px;font-weight:700;color:#1a1e2c}
+.hidden{display:none!important}
+.track-check{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0}
+.track-check label{font-weight:400;margin:0;display:flex;align-items:center;gap:4px}
+.track-check input[type="checkbox"]{width:auto;margin:0}
+.playback-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.playback-controls button{width:auto;padding:8px 16px}
+.playback-controls .playhead{flex:1;height:6px;background:#e5e7eb;border-radius:3px;position:relative;min-width:80px}
+.playback-controls .playhead .position{height:100%;background:#4f46e5;border-radius:3px;width:0;transition:width .05s linear}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <header>
+    <h1>MIDI Groove Extractor <small>Pro v4</small></h1>
+  </header>
+
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-panel="source">📂 Source</button>
+    <button class="tab" data-panel="analysis">🔍 Analysis</button>
+    <button class="tab" data-panel="target">🎯 Target</button>
+    <button class="tab" data-panel="apply">⚡ Apply</button>
+    <button class="tab" data-panel="library">📚 Library</button>
+    <button class="tab" data-panel="export">💾 Export</button>
+    <button class="tab" data-panel="playback">▶️ Playback</button>
+  </div>
+
+  <!-- PANELS -->
+  <div id="panel-source" class="panel active">
+    <h2>Load Groove Source MIDI</h2>
+    <input type="file" id="sourceFile" accept=".mid,.midi">
+    <div id="sourceStatus" class="status">No file loaded.</div>
+    <div id="sourceInfo" class="row"></div>
+    <button id="resetProject" class="danger" style="width:auto;margin-top:8px">🗑️ Reset Project</button>
+  </div>
+
+  <div id="panel-analysis" class="panel">
+    <h2>Groove Analysis</h2>
+    <div id="analysisStatus" class="status">Load a source MIDI first.</div>
+    <div id="grooveStats" class="groove-stats"></div>
+    <div class="canvas-wrap">
+      <canvas id="pianoRollBefore"></canvas>
+    </div>
+    <div class="flex">
+      <button id="visualizeBtn" class="secondary">🎹 Refresh</button>
+    </div>
+  </div>
+
+  <div id="panel-target" class="panel">
+    <h2>Load Target MIDI</h2>
+    <input type="file" id="targetFile" accept=".mid,.midi">
+    <div id="targetStatus" class="status">No target loaded.</div>
+    <div id="targetInfo" class="row"></div>
+  </div>
+
+  <div id="panel-apply" class="panel">
+    <h2>Apply Groove</h2>
+    <div id="applyStatus" class="status">Load source and target first.</div>
+    <div class="row">
+      <div><label>Timing Strength</label><input type="range" id="timingStrength" min="0" max="100" value="70"><span id="timingStrengthVal">70%</span></div>
+      <div><label>Velocity Strength</label><input type="range" id="velStrength" min="0" max="100" value="60"><span id="velStrengthVal">60%</span></div>
+    </div>
+    <div class="row">
+      <div><label>Apply Mode</label>
+        <select id="applyMode">
+          <option value="both">Timing + Velocity</option>
+          <option value="timing">Timing only</option>
+          <option value="velocity">Velocity only</option>
+        </select>
+      </div>
+      <div><label>Max Timing Shift (ms)</label><input id="maxShift" type="number" value="30" min="0" step="1"></div>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="preserveChords" checked> Preserve chords</label>
+      <label><input type="checkbox" id="preserveBass" checked> Protect bass</label>
+      <label><input type="checkbox" id="drumMode"> Drum‑aware mode</label>
+    </div>
+    <div class="track-check" id="trackSelection">
+      <span style="font-weight:600;margin-right:8px;">Apply to tracks:</span>
+      <span id="trackList">(load target)</span>
+    </div>
+    <button id="applyBtn">⚡ Apply Groove</button>
+    <div id="applyResult" class="status"></div>
+    <div class="canvas-wrap">
+      <canvas id="pianoRollAfter"></canvas>
+    </div>
+  </div>
+
+  <div id="panel-library" class="panel">
+    <h2>Groove Library</h2>
+    <div class="flex">
+      <button id="saveGrooveBtn">💾 Save Groove</button>
+      <button id="loadGrooveBtn" class="secondary">📂 Load Groove</button>
+      <input type="file" id="loadGrooveFile" accept=".json" style="display:none">
+    </div>
+    <div id="libraryStatus" class="status">No grooves saved yet.</div>
+    <div id="libraryList" class="library-list"></div>
+  </div>
+
+  <div id="panel-export" class="panel">
+    <h2>Export Grooved MIDI</h2>
+    <button id="exportBtn">⬇️ Download MIDI</button>
+    <div id="exportStatus" class="status">Apply a groove first.</div>
+    <p class="status" style="font-size:13px;background:#f0f0f0;">All processing is local; files never leave your device.</p>
+  </div>
+
+  <div id="panel-playback" class="panel">
+    <h2>Playback &amp; Comparison</h2>
+    <div class="playback-controls">
+      <button id="playBeforeBtn" class="secondary">▶️ Before</button>
+      <button id="playAfterBtn" class="secondary">▶️ After</button>
+      <button id="stopBtn" class="danger" style="width:auto;">⏹️ Stop</button>
+      <div class="playhead"><div class="position" id="playheadPos"></div></div>
+    </div>
+    <div id="playbackStatus" class="status">Load source and apply groove to enable playback.</div>
+    <div class="canvas-wrap">
+      <canvas id="pianoRollPlayback"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// --------------------------------------------------------------------
+//  UTILITIES
+// --------------------------------------------------------------------
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+function uid(){ return Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7); }
+function lerp(a,b,t){ return a + (b-a)*t; }
+
+// --------------------------------------------------------------------
+//  MIDI PARSER / WRITER  (fixed meta/SysEx slicing, stable note IDs)
+// --------------------------------------------------------------------
+function readVarLen(data, pos) {
+  let value = 0, b;
+  do {
+    if (pos >= data.length) throw new Error('Unexpected end of MIDI data.');
+    b = data[pos++];
+    value = (value << 7) | (b & 0x7f);
+  } while (b & 0x80);
+  return { value, pos };
+}
+function writeVarLen(v) {
+  const bytes = [];
+  bytes.push(v & 0x7f);
+  v >>>= 7;
+  while (v > 0) {
+    bytes.push((v & 0x7f) | 0x80);
+    v >>>= 7;
+  }
+  return bytes.reverse();
+}
+function readU16(data, pos) { return (data[pos] << 8) | data[pos+1]; }
+function readU32(data, pos) {
+  return ((data[pos] << 24) | (data[pos+1] << 16) | (data[pos+2] << 8) | data[pos+3]) >>> 0;
+}
+function writeU16(v) { return [(v >> 8) & 0xff, v & 0xff]; }
+function writeU32(v) { return [(v >> 24) & 0xff, (v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff]; }
+
+function parseMidi(data) {
+  const view = new Uint8Array(data);
+  if (view[0] !== 0x4d || view[1] !== 0x54 || view[2] !== 0x68 || view[3] !== 0x64)
+    throw new Error('Not a Standard MIDI file');
+  const headerLen = readU32(view, 4);
+  if (headerLen < 6) throw new Error('Invalid MIDI header length.');
+  const format = readU16(view, 8);
+  const trackCount = readU16(view, 10);
+  const division = readU16(view, 12);
+  if (division & 0x8000) throw new Error('SMPTE timing not supported');
+  let pos = 8 + headerLen;
+  const trackChunks = [];
+  for (let i = 0; i < trackCount; i++) {
+    if (view[pos] !== 0x4d || view[pos+1] !== 0x54 || view[pos+2] !== 0x72 || view[pos+3] !== 0x6b)
+      throw new Error('Invalid track chunk');
+    const len = readU32(view, pos + 4);
+    pos += 8;
+    if (pos + len > view.length) throw new Error('Truncated MIDI data');
+    const chunk = view.slice(pos, pos + len);
+    pos += len;
+    trackChunks.push(chunk);
+  }
+  return { format, division, trackChunks };
+}
+
+function midiTracksToEvents(trackChunks, division) {
+  // Returns array of arrays of event objects with absolute tick and stable note IDs.
+  const result = [];
+  let globalNoteId = 0;
+  for (const chunk of trackChunks) {
+    const events = [];
+    let tick = 0, running = 0, i = 0;
+    const activeNotes = new Map(); // key -> stack of { noteId, startTick }
+    while (i < chunk.length) {
+      const r = readVarLen(chunk, i);
+      tick += r.value;
+      i = r.pos;
+      let status = chunk[i++];
+      if (status < 0x80) {
+        i--;
+        status = running;
+      } else {
+        running = status;
+      }
+      // SysEx
+      if (status === 0xf0 || status === 0xf7) {
+        const r2 = readVarLen(chunk, i);
+        const data = chunk.slice(r2.pos, r2.pos + r2.value);
+        i = r2.pos + r2.value;
+        events.push({ tick, type: 'sysex', status, data });
+        continue;
+      }
+      // Meta event
+      if (status === 0xff) {
+        const metaType = chunk[i++];
+        const r2 = readVarLen(chunk, i);
+        const data = chunk.slice(r2.pos, r2.pos + r2.value);
+        i = r2.pos + r2.value;
+        events.push({ tick, type: 'meta', metaType, data });
+        continue;
+      }
+      const type = status & 0xf0;
+      const channel = status & 0x0f;
+      if (type === 0xc0) {
+        const program = chunk[i++];
+        events.push({ tick, type: 'program', channel, program });
+        continue;
+      }
+      if (type === 0xd0) {
+        const pressure = chunk[i++];
+        events.push({ tick, type: 'pressure', channel, pressure });
+        continue;
+      }
+      // Two-byte events
+      const p1 = chunk[i++];
+      const p2 = chunk[i++];
+      if (type === 0x90 && p2 > 0) { // note on
+        const noteId = globalNoteId++;
+        const key = channel + ':' + p1;
+        if (!activeNotes.has(key)) activeNotes.set(key, []);
+        activeNotes.get(key).push({ noteId, startTick: tick });
+        events.push({ tick, type: 'noteOn', channel, pitch: p1, velocity: p2, noteId, startTick: tick });
+      } else if (type === 0x80 || (type === 0x90 && p2 === 0)) { // note off
+        const key = channel + ':' + p1;
+        const stack = activeNotes.get(key);
+        if (stack && stack.length) {
+          const entry = stack.pop();
+          events.push({ tick, type: 'noteOff', channel, pitch: p1, noteId: entry.noteId, startTick: entry.startTick });
+        }
+        if (stack && stack.length === 0) activeNotes.delete(key);
+      } else if (type === 0xb0) {
+        events.push({ tick, type: 'control', channel, controller: p1, value: p2 });
+      } else if (type === 0xe0) {
+        events.push({ tick, type: 'pitchBend', channel, value: (p2 << 7) | p1 });
+      } else if (type === 0xa0) {
+        events.push({ tick, type: 'polyAftertouch', channel, pitch: p1, pressure: p2 });
+      } else {
+        // Preserve unknown events as raw bytes
+        events.push({ tick, type: 'raw', data: [status, p1, p2] });
+      }
+    }
+    // Close hanging notes
+    for (const [key, stack] of activeNotes) {
+      const parts = key.split(':');
+      const ch = parseInt(parts[0]), pitch = parseInt(parts[1]);
+      for (const entry of stack) {
+        events.push({ tick, type: 'noteOff', channel: ch, pitch, noteId: entry.noteId, startTick: entry.startTick });
+      }
+    }
+    events.sort((a,b) => a.tick - b.tick);
+    // Assign original order for stable sorting
+    events.forEach((e, idx) => e._order = idx);
+    result.push(events);
+  }
+  return result;
+}
+
+function buildMidiFromEvents(eventsPerTrack, division, format) {
+  // eventsPerTrack: array of arrays of event objects with absolute tick
+  const trackChunks = [];
+  for (const events of eventsPerTrack) {
+    // Remove any existing end-of-track meta events
+    const filtered = events.filter(e => !(e.type === 'meta' && e.metaType === 0x2f));
+    // Sort by tick, then by stable order (note-off before note-on at same tick)
+    const sorted = filtered.slice().sort((a,b) => {
+      if (a.tick !== b.tick) return a.tick - b.tick;
+      // note-off before note-on
+      const order = { noteOff: 0, control: 1, pitchBend: 1, program: 1, pressure: 1, polyAftertouch: 1, meta: 2, sysex: 2, noteOn: 3, raw: 4 };
+      const pa = order[a.type] || 0;
+      const pb = order[b.type] || 0;
+      if (pa !== pb) return pa - pb;
+      return (a._order || 0) - (b._order || 0);
+    });
+    // Build track data
+    let data = [];
+    let lastTick = 0;
+    for (const ev of sorted) {
+      const delta = ev.tick - lastTick;
+      if (delta < 0) throw new Error('Negative tick in export');
+      if (ev.type === 'meta') {
+        data.push(...writeVarLen(delta), 0xff, ev.metaType, ...writeVarLen(ev.data.length), ...ev.data);
+      } else if (ev.type === 'sysex') {
+        data.push(...writeVarLen(delta), ev.status, ...writeVarLen(ev.data.length), ...ev.data);
+      } else if (ev.type === 'program') {
+        data.push(...writeVarLen(delta), 0xc0 | ev.channel, ev.program);
+      } else if (ev.type === 'pressure') {
+        data.push(...writeVarLen(delta), 0xd0 | ev.channel, ev.pressure);
+      } else if (ev.type === 'noteOn') {
+        data.push(...writeVarLen(delta), 0x90 | ev.channel, ev.pitch, ev.velocity);
+      } else if (ev.type === 'noteOff') {
+        data.push(...writeVarLen(delta), 0x80 | ev.channel, ev.pitch, 0);
+      } else if (ev.type === 'control') {
+        data.push(...writeVarLen(delta), 0xb0 | ev.channel, ev.controller, ev.value);
+      } else if (ev.type === 'pitchBend') {
+        data.push(...writeVarLen(delta), 0xe0 | ev.channel, ev.value & 0x7f, (ev.value >> 7) & 0x7f);
+      } else if (ev.type === 'polyAftertouch') {
+        data.push(...writeVarLen(delta), 0xa0 | ev.channel, ev.pitch, ev.pressure);
+      } else if (ev.type === 'raw') {
+        data.push(...writeVarLen(delta), ...ev.data);
+      } else {
+        data.push(...writeVarLen(delta));
+      }
+      lastTick = ev.tick;
+    }
+    // Append end-of-track
+    data.push(...writeVarLen(0), 0xff, 0x2f, 0);
+    const chunk = new Uint8Array([0x4d, 0x54, 0x72, 0x6b, ...writeU32(data.length), ...data]);
+    trackChunks.push(chunk);
+  }
+  // Header: preserve format if possible (0 or 1), else default to 1
+  const outFormat = (format === 0 && trackChunks.length === 1) ? 0 : 1;
+  const header = new Uint8Array([0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, outFormat, ...writeU16(trackChunks.length), ...writeU16(division)]);
+  const totalLen = header.length + trackChunks.reduce((s,c) => s + c.length, 0);
+  const result = new Uint8Array(totalLen);
+  result.set(header, 0);
+  let offset = header.length;
+  for (const chunk of trackChunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+// --------------------------------------------------------------------
+//  GROOVE ANALYSIS (fixed swing, time signature awareness)
+// --------------------------------------------------------------------
+function analyzeGroove(eventsPerTrack, division) {
+  // Extract noteOns from all tracks (or later we can limit to selected track)
+  const noteOns = [];
+  for (const track of eventsPerTrack) {
+    for (const ev of track) {
+      if (ev.type === 'noteOn') {
+        noteOns.push({ tick: ev.tick, velocity: ev.velocity, track: ev._track || 0, channel: ev.channel });
+      }
+    }
+  }
+  if (!noteOns.length) throw new Error('No note events found in source.');
+
+  const ticksPerBeat = division;
+  const ticksPerBar = ticksPerBeat * 4; // assume 4/4 for now, but we'll parse meta later
+  const stepsPerBar = 16;
+  const stepTicks = ticksPerBar / stepsPerBar;
+  const profile = [];
+  for (let i = 0; i < stepsPerBar; i++) {
+    profile.push({ offsets: [], velocities: [], hits: 0 });
+  }
+
+  for (const n of noteOns) {
+    const bar = Math.floor(n.tick / ticksPerBar);
+    const barTick = n.tick - bar * ticksPerBar;
+    const step = Math.round(barTick / stepTicks) % stepsPerBar;
+    const gridTick = Math.round(barTick / stepTicks) * stepTicks;
+    const offset = n.tick - (bar * ticksPerBar + gridTick);
+    profile[step].offsets.push(offset);
+    profile[step].velocities.push(n.velocity);
+    profile[step].hits++;
+  }
+
+  // Compute robust statistics (median for offset, trimmed mean for velocity)
+  const stepData = profile.map(s => {
+    const offs = s.offsets;
+    const vels = s.velocities;
+    // Median offset
+    let medOff = 0;
+    if (offs.length) {
+      const sorted = offs.slice().sort((a,b)=>a-b);
+      medOff = sorted[Math.floor(sorted.length/2)];
+    }
+    // Trimmed mean velocity (remove top/bottom 10%)
+    let avgVel = 0;
+    if (vels.length) {
+      const sorted = vels.slice().sort((a,b)=>a-b);
+      const trim = Math.max(1, Math.floor(sorted.length * 0.1));
+      const trimmed = sorted.slice(trim, sorted.length - trim);
+      avgVel = trimmed.reduce((a,b)=>a+b,0) / trimmed.length;
+    }
+    const devVel = vels.length ? Math.sqrt(vels.reduce((a,b)=>a + (b-avgVel)**2, 0) / vels.length) : 0;
+    return { offset: medOff, avgVel, devVel, hits: vels.length };
+  });
+
+  // Swing: conventional scale (50% = straight)
+  let swingSum = 0, swingCount = 0;
+  for (let beat = 0; beat < 4; beat++) {
+    const onStep = beat * 4;
+    const offStep = beat * 4 + 2;
+    if (stepData[offStep].hits > 0 && stepData[onStep].hits > 0) {
+      // The offbeat eighth is two steps later; straight would be exactly 2*stepTicks
+      const onOff = stepData[onStep].offset;
+      const offOff = stepData[offStep].offset;
+      const actualOff = offOff - onOff + stepTicks * 2;
+      // 50% means actualOff == stepTicks*2
+      // 100% would mean actualOff == stepTicks*4 (i.e. triplet feel)
+      const ratio = (actualOff - stepTicks*2) / (stepTicks*2) * 100 + 50; // convert to 50..100 scale
+      swingSum += clamp(ratio, 0, 100);
+      swingCount++;
+    }
+  }
+  const swingPercent = swingCount > 0 ? (swingSum / swingCount) : 50;
+
+  return {
+    division,
+    ticksPerBar,
+    stepTicks,
+    profile: stepData,
+    swingPercent,
+    totalNotes: noteOns.length,
+    avgVelocity: noteOns.reduce((s,n) => s + n.velocity, 0) / noteOns.length,
+    stepCount: stepsPerBar
+  };
+}
+
+// --------------------------------------------------------------------
+//  GROOVE APPLICATION  (fixed: neutral at 0%, preserve noteIds, resort)
+// --------------------------------------------------------------------
+function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, mode, preserveChords, preserveBass, drumMode, maxShiftMs, trackMask, targetDivision, tempo) {
+  // Clone events per track
+  const newEvents = eventsPerTrack.map(track => track.map(ev => ({ ...ev })));
+  // Compute max shift in ticks from milliseconds
+  const ticksPerSecond = targetDivision * (tempo / 60);
+  const maxShiftTicks = Math.round(maxShiftMs / 1000 * ticksPerSecond);
+
+  // Build chord groups (per track and channel)
+  const chordGroups = [];
+  if (preserveChords) {
+    // For each track and channel, group note ons by onset time
+    for (let ti = 0; ti < newEvents.length; ti++) {
+      if (!trackMask[ti]) continue;
+      const track = newEvents[ti];
+      const channelMap = new Map();
+      for (const ev of track) {
+        if (ev.type === 'noteOn') {
+          if (!channelMap.has(ev.channel)) channelMap.set(ev.channel, []);
+          channelMap.get(ev.channel).push(ev);
+        }
+      }
+      for (const [channel, noteList] of channelMap) {
+        const sorted = noteList.slice().sort((a,b) => a.tick - b.tick);
+        let current = [];
+        for (const n of sorted) {
+          if (current.length === 0 || n.tick - current[0].tick < sourceProfile.stepTicks / 4) {
+            current.push(n);
+          } else {
+            if (current.length > 1) chordGroups.push(current);
+            current = [n];
+          }
+        }
+        if (current.length > 1) chordGroups.push(current);
+      }
+    }
+    // Mark processed groups
+    for (const group of chordGroups) {
+      for (const n of group) n._group = group;
+    }
+  }
+
+  // Helper: apply timing interpolation
+  function applyTiming(tick, profile, strength) {
+    const ticksPerBar = profile.ticksPerBar;
+    const bar = Math.floor(tick / ticksPerBar);
+    const barTick = tick - bar * ticksPerBar;
+    const step = Math.round(barTick / profile.stepTicks) % profile.stepCount;
+    const gridTick = Math.round(barTick / profile.stepTicks) * profile.stepTicks;
+    const offset = profile.profile[step].offset;
+    // Compute the full groove target, then interpolate linearly.
+    const grooveTarget = gridTick + offset;
+    const newTick = tick + (grooveTarget - tick) * (strength / 100);
+    // Clamp by max shift
+    const shift = newTick - tick;
+    const clampedShift = clamp(shift, -maxShiftTicks, maxShiftTicks);
+    return tick + clampedShift;
+  }
+
+  function applyVelocity(vel, tick, profile, strength) {
+    const ticksPerBar = profile.ticksPerBar;
+    const bar = Math.floor(tick / ticksPerBar);
+    const barTick = tick - bar * ticksPerBar;
+    const step = Math.round(barTick / profile.stepTicks) % profile.stepCount;
+    const avg = profile.profile[step].avgVel;
+    if (avg === 0) return vel;
+    const diff = avg - profile.avgVelocity;
+    const newVel = vel + diff * (strength / 100);
+    return clamp(Math.round(newVel), 1, 127);
+  }
+
+  // Process tracks
+  for (let ti = 0; ti < newEvents.length; ti++) {
+    if (!trackMask[ti]) continue;
+    const track = newEvents[ti];
+    // First pass: collect noteOns and apply changes
+    for (const ev of track) {
+      if (ev.type !== 'noteOn') continue;
+      // Bass protection
+      if (preserveBass && (ev.channel === 1 || ev.pitch < 60)) continue;
+      // Drum mode: we'll handle separately later
+      if (drumMode && ev.channel === 9) continue;
+
+      const group = ev._group;
+      if (group && preserveChords) {
+        // Process the whole group together
+        if (group._processed) continue;
+        group._processed = true;
+        const avgTick = group.reduce((s, n) => s + n.tick, 0) / group.length;
+        const avgVel = group.reduce((s, n) => s + n.velocity, 0) / group.length;
+        let newAvgTick = avgTick;
+        let newAvgVel = avgVel;
+        if (mode === 'timing' || mode === 'both') {
+          newAvgTick = applyTiming(avgTick, sourceProfile, timingStr);
+        }
+        if (mode === 'velocity' || mode === 'both') {
+          newAvgVel = applyVelocity(avgVel, avgTick, sourceProfile, velStr);
+        }
+        const shift = newAvgTick - avgTick;
+        const velShift = newAvgVel - avgVel;
+        for (const n of group) {
+          if (mode === 'timing' || mode === 'both') {
+            n.tick = Math.max(0, Math.round(n.tick + shift));
+          }
+          if (mode === 'velocity' || mode === 'both') {
+            n.velocity = clamp(Math.round(n.velocity + velShift), 1, 127);
+          }
+        }
+        continue;
+      }
+
+      // Individual note
+      let newTick = ev.tick, newVel = ev.velocity;
+      if (mode === 'timing' || mode === 'both') {
+        newTick = applyTiming(ev.tick, sourceProfile, timingStr);
+        newTick = Math.max(0, newTick);
+      }
+      if (mode === 'velocity' || mode === 'both') {
+        newVel = applyVelocity(ev.velocity, ev.tick, sourceProfile, velStr);
+      }
+      ev.tick = Math.round(newTick);
+      ev.velocity = newVel;
+    }
+  }
+
+  // Adjust noteOffs using noteId mapping
+  for (let ti = 0; ti < newEvents.length; ti++) {
+    if (!trackMask[ti]) continue;
+    const track = newEvents[ti];
+    const noteOnMap = new Map();
+    for (const ev of track) {
+      if (ev.type === 'noteOn') {
+        noteOnMap.set(ev.noteId, ev);
+      }
+    }
+    for (const ev of track) {
+      if (ev.type === 'noteOff') {
+        const on = noteOnMap.get(ev.noteId);
+        if (on) {
+          // Preserve duration
+          const dur = ev.tick - ev.startTick;
+          ev.tick = on.tick + dur;
+          ev.startTick = on.tick;
+        }
+      }
+    }
+  }
+
+  // Resort each track by tick and stable order
+  for (let ti = 0; ti < newEvents.length; ti++) {
+    newEvents[ti].sort((a,b) => {
+      if (a.tick !== b.tick) return a.tick - b.tick;
+      const order = { noteOff: 0, control: 1, pitchBend: 1, program: 1, pressure: 1, polyAftertouch: 1, meta: 2, sysex: 2, noteOn: 3, raw: 4 };
+      const pa = order[a.type] || 0;
+      const pb = order[b.type] || 0;
+      if (pa !== pb) return pa - pb;
+      return (a._order || 0) - (b._order || 0);
+    });
+  }
+
+  return newEvents;
+}
+
+// --------------------------------------------------------------------
+//  UI STATE
+// --------------------------------------------------------------------
+let sourceEvents = null, sourceDivision = null, sourceGroove = null, sourceFormat = 0;
+let targetEvents = null, targetDivision = null, targetFileName = '', targetFormat = 0, targetTempo = 120;
+let appliedEvents = null;
+let grooveLibrary = [];
+
+let playState = { playing: false, type: null, startTime: 0, currentTick: 0, totalTicks: 0, events: [], interval: null, rafId: null, nodes: [] };
+let audioCtx = null;
+
+const sourceFile = document.getElementById('sourceFile');
+const targetFile = document.getElementById('targetFile');
+const tabs = document.querySelectorAll('.tab');
+const panels = document.querySelectorAll('.panel');
+
+tabs.forEach(tab => tab.addEventListener('click', function() {
+  tabs.forEach(t => t.classList.remove('active'));
+  this.classList.add('active');
+  panels.forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + this.dataset.panel).classList.add('active');
+}));
+
+// ----------------------- Source Loading -----------------------
+sourceFile.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const buffer = await file.arrayBuffer();
+    const parsed = parseMidi(new Uint8Array(buffer));
+    const events = midiTracksToEvents(parsed.trackChunks, parsed.division);
+    sourceEvents = events;
+    sourceDivision = parsed.division;
+    sourceFormat = parsed.format;
+    sourceGroove = analyzeGroove(events, parsed.division);
+    document.getElementById('sourceStatus').textContent = `Loaded: ${file.name} | ${sourceGroove.totalNotes} notes | ${parsed.division} PPQ`;
+    document.getElementById('sourceStatus').className = 'status ok';
+    document.getElementById('sourceInfo').innerHTML = `
+      <div class="stat"><span class="label">Tracks</span><div class="value">${events.length}</div></div>
+      <div class="stat"><span class="label">PPQ</span><div class="value">${parsed.division}</div></div>
+      <div class="stat"><span class="label">Swing</span><div class="value">${sourceGroove.swingPercent.toFixed(1)}%</div></div>
+      <div class="stat"><span class="label">Notes</span><div class="value">${sourceGroove.totalNotes}</div></div>
+    `;
+    updateAnalysis();
+    document.getElementById('applyStatus').textContent = 'Source loaded. Load a target.';
+    document.getElementById('applyStatus').className = 'status ok';
+    invalidateApply();
+  } catch(err) {
+    document.getElementById('sourceStatus').textContent = 'Error: ' + err.message;
+    document.getElementById('sourceStatus').className = 'status err';
+  }
+});
+
+function updateAnalysis() {
+  if (!sourceGroove) {
+    document.getElementById('analysisStatus').textContent = 'Load a source MIDI first.';
+    return;
+  }
+  const g = sourceGroove;
+  document.getElementById('analysisStatus').textContent = 'Analysis complete.';
+  document.getElementById('analysisStatus').className = 'status ok';
+  document.getElementById('grooveStats').innerHTML = `
+    <div class="stat"><span class="label">Swing</span><div class="value">${g.swingPercent.toFixed(1)}%</div></div>
+    <div class="stat"><span class="label">Avg Velocity</span><div class="value">${g.avgVelocity.toFixed(0)}</div></div>
+    <div class="stat"><span class="label">Step resolution</span><div class="value">${g.stepCount}</div></div>
+    <div class="stat"><span class="label">Total notes</span><div class="value">${g.totalNotes}</div></div>
+  `;
+  const notes = extractNoteOns(sourceEvents);
+  drawPianoRoll(document.getElementById('pianoRollBefore'), notes, sourceDivision);
+}
+
+function extractNoteOns(eventsPerTrack) {
+  const notes = [];
+  for (const track of eventsPerTrack) {
+    for (const ev of track) {
+      if (ev.type === 'noteOn') {
+        notes.push({ tick: ev.tick, pitch: ev.pitch, velocity: ev.velocity });
+      }
+    }
+  }
+  return notes;
+}
+
+function drawPianoRoll(canvas, notes, division) {
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.parentElement.clientWidth || 800;
+  const height = 300;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, width, height);
+  if (!notes.length) return;
+  const minPitch = Math.min(...notes.map(n => n.pitch)) - 2;
+  const maxPitch = Math.max(...notes.map(n => n.pitch)) + 2;
+  const range = maxPitch - minPitch || 1;
+  const maxTick = Math.max(...notes.map(n => n.tick)) + division * 4;
+  const margin = 20;
+  const plotW = width - 2*margin;
+  const plotH = height - 2*margin;
+  const yScale = plotH / range;
+  const xScale = plotW / (maxTick || 1);
+  ctx.strokeStyle = '#e5e7eb';
+  ctx.lineWidth = 0.5;
+  for (let x=0; x<maxTick; x+=division) {
+    const px = margin + x * xScale;
+    ctx.beginPath();
+    ctx.moveTo(px, margin);
+    ctx.lineTo(px, height - margin);
+    ctx.stroke();
+  }
+  for (const n of notes) {
+    const x = margin + n.tick * xScale;
+    const y = height - margin - (n.pitch - minPitch) * yScale;
+    const w = Math.max(1, (division/2) * xScale);
+    const h = yScale * 0.8;
+    ctx.fillStyle = '#4f46e5';
+    ctx.fillRect(x, y - h, w, h);
+  }
+}
+
+// ----------------------- Target Loading -----------------------
+targetFile.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const buffer = await file.arrayBuffer();
+    const parsed = parseMidi(new Uint8Array(buffer));
+    const events = midiTracksToEvents(parsed.trackChunks, parsed.division);
+    targetEvents = events;
+    targetDivision = parsed.division;
+    targetFormat = parsed.format;
+    targetFileName = file.name;
+    // Find initial tempo from meta events
+    let tempo = 120;
+    for (const track of events) {
+      for (const ev of track) {
+        if (ev.type === 'meta' && ev.metaType === 0x51) {
+          const us = (ev.data[0] << 16) | (ev.data[1] << 8) | ev.data[2];
+          tempo = Math.round(60000000 / us);
+          break;
+        }
+      }
+      if (tempo !== 120) break;
+    }
+    targetTempo = tempo;
+    document.getElementById('targetStatus').textContent = `Loaded: ${file.name} | ${parsed.division} PPQ | ${tempo} BPM`;
+    document.getElementById('targetStatus').className = 'status ok';
+    document.getElementById('targetInfo').innerHTML = `
+      <div class="stat"><span class="label">Tracks</span><div class="value">${events.length}</div></div>
+      <div class="stat"><span class="label">PPQ</span><div class="value">${parsed.division}</div></div>
+      <div class="stat"><span class="label">Tempo</span><div class="value">${tempo} BPM</div></div>
+      <div class="stat"><span class="label">Events</span><div class="value">${events.reduce((s,t) => s + t.length, 0)}</div></div>
+    `;
+    document.getElementById('applyStatus').textContent = 'Target loaded. Ready to apply.';
+    document.getElementById('applyStatus').className = 'status ok';
+    // Populate track selection with track names
+    const container = document.getElementById('trackSelection');
+    container.innerHTML = '<span style="font-weight:600;margin-right:8px;">Apply to tracks:</span>';
+    events.forEach((track, i) => {
+      let name = `Track ${i+1}`;
+      for (const ev of track) {
+        if (ev.type === 'meta' && ev.metaType === 0x03) {
+          name = new TextDecoder().decode(ev.data).replace(/\0/g, '').trim() || name;
+          break;
+        }
+      }
+      const label = document.createElement('label');
+      label.innerHTML = `<input type="checkbox" class="trackCheck" data-track="${i}" checked> ${name}`;
+      container.appendChild(label);
+    });
+    document.getElementById('trackList').textContent = '';
+    invalidateApply();
+  } catch(err) {
+    document.getElementById('targetStatus').textContent = 'Error: ' + err.message;
+    document.getElementById('targetStatus').className = 'status err';
+  }
+});
+
+function invalidateApply() {
+  appliedEvents = null;
+  document.getElementById('exportStatus').textContent = 'Apply a groove first.';
+  document.getElementById('exportStatus').className = 'status';
+  document.getElementById('applyResult').textContent = '';
+  document.getElementById('applyResult').className = 'status';
+  document.getElementById('playbackStatus').textContent = 'Apply a groove to enable playback.';
+  document.getElementById('playbackStatus').className = 'status';
+  document.getElementById('playAfterBtn').disabled = true;
+  document.getElementById('exportBtn').disabled = true;
+}
+
+// ----------------------- Apply -----------------------
+document.getElementById('applyBtn').addEventListener('click', () => {
+  if (!sourceGroove || !targetEvents) {
+    document.getElementById('applyResult').textContent = 'Load both source and target first.';
+    document.getElementById('applyResult').className = 'status err';
+    return;
+  }
+  try {
+    const timingStr = parseInt(document.getElementById('timingStrength').value);
+    const velStr = parseInt(document.getElementById('velStrength').value);
+    const mode = document.getElementById('applyMode').value;
+    const preserveChords = document.getElementById('preserveChords').checked;
+    const preserveBass = document.getElementById('preserveBass').checked;
+    const drumMode = document.getElementById('drumMode').checked;
+    const maxShiftMs = parseFloat(document.getElementById('maxShift').value) || 30;
+
+    // Build track mask
+    const checks = document.querySelectorAll('.trackCheck');
+    const trackMask = checks.length ? Array.from(checks).map(c => c.checked) : targetEvents.map(() => true);
+
+    // Scale source profile to target PPQ and tempo
+    const targetTicksPerBar = targetDivision * 4;
+    const sourceTicksPerBar = sourceGroove.ticksPerBar;
+    const stepRatio = (targetTicksPerBar / sourceTicksPerBar);
+    const scaledProfile = {
+      ...sourceGroove,
+      ticksPerBar: targetTicksPerBar,
+      stepTicks: sourceGroove.stepTicks * stepRatio,
+      profile: sourceGroove.profile.map(s => ({
+        ...s,
+        offset: s.offset * stepRatio
+      }))
+    };
+
+    appliedEvents = applyGrooveToEvents(
+      targetEvents,
+      scaledProfile,
+      timingStr,
+      velStr,
+      mode,
+      preserveChords,
+      preserveBass,
+      drumMode,
+      maxShiftMs,
+      trackMask,
+      targetDivision,
+      targetTempo
+    );
+
+    document.getElementById('applyResult').textContent = 'Groove applied successfully!';
+    document.getElementById('applyResult').className = 'status ok';
+    // Draw after piano roll
+    const notes = extractNoteOns(appliedEvents);
+    drawPianoRoll(document.getElementById('pianoRollAfter'), notes, targetDivision);
+    document.getElementById('exportStatus').textContent = 'Grooved MIDI ready for export.';
+    document.getElementById('exportStatus').className = 'status ok';
+    document.getElementById('playbackStatus').textContent = 'Groove applied. Use Before/After playback.';
+    document.getElementById('playbackStatus').className = 'status ok';
+    document.getElementById('playAfterBtn').disabled = false;
+    document.getElementById('exportBtn').disabled = false;
+  } catch(err) {
+    document.getElementById('applyResult').textContent = 'Error: ' + err.message;
+    document.getElementById('applyResult').className = 'status err';
+  }
+});
+
+// ----------------------- Export -----------------------
+document.getElementById('exportBtn').addEventListener('click', () => {
+  if (!appliedEvents) {
+    document.getElementById('exportStatus').textContent = 'Apply a groove first.';
+    document.getElementById('exportStatus').className = 'status err';
+    return;
+  }
+  try {
+    const midi = buildMidiFromEvents(appliedEvents, targetDivision, targetFormat);
+    const blob = new Blob([midi], { type: 'audio/midi' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const baseName = targetFileName.replace(/\.midi?$/i, '') || 'grooved';
+    a.download = baseName + '_grooved.mid';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    document.getElementById('exportStatus').textContent = 'MIDI downloaded.';
+    document.getElementById('exportStatus').className = 'status ok';
+  } catch(err) {
+    document.getElementById('exportStatus').textContent = 'Export error: ' + err.message;
+    document.getElementById('exportStatus').className = 'status err';
+  }
+});
+
+// ----------------------- Library -----------------------
+document.getElementById('saveGrooveBtn').addEventListener('click', () => {
+  if (!sourceGroove) {
+    document.getElementById('libraryStatus').textContent = 'No groove to save.';
+    document.getElementById('libraryStatus').className = 'status err';
+    return;
+  }
+  const grooveObj = {
+    id: uid(),
+    name: 'Groove ' + (grooveLibrary.length + 1),
+    format: 'groove',
+    version: '1.0',
+    sourcePPQ: sourceDivision,
+    timeSignature: '4/4',
+    resolution: 16,
+    timingOffsets: sourceGroove.profile.map(s => s.offset),
+    velocityDeviations: sourceGroove.profile.map(s => s.avgVel - sourceGroove.avgVelocity),
+    hitProbabilities: sourceGroove.profile.map(s => s.hits / sourceGroove.totalNotes),
+    sampleCounts: sourceGroove.profile.map(s => s.hits),
+    analysis: {
+      swingPercent: sourceGroove.swingPercent,
+      avgVelocity: sourceGroove.avgVelocity,
+      totalNotes: sourceGroove.totalNotes
+    }
+  };
+  grooveLibrary.push(grooveObj);
+  updateLibraryUI();
+  const json = JSON.stringify(grooveObj, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = grooveObj.name + '.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+
+document.getElementById('loadGrooveBtn').addEventListener('click', () => {
+  document.getElementById('loadGrooveFile').click();
+});
+document.getElementById('loadGrooveFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const obj = JSON.parse(text);
+    // Validate schema
+    if (!obj || typeof obj !== 'object') throw new Error('Invalid JSON');
+    if (obj.format !== 'groove' || !obj.version) throw new Error('Invalid groove format');
+    if (obj.version !== '1.0') throw new Error('Unsupported version');
+    if (!Array.isArray(obj.timingOffsets) || !Array.isArray(obj.velocityDeviations) || !Array.isArray(obj.sampleCounts))
+      throw new Error('Missing arrays');
+    if (obj.timingOffsets.length !== obj.velocityDeviations.length || obj.timingOffsets.length !== obj.sampleCounts.length)
+      throw new Error('Array length mismatch');
+    if (typeof obj.sourcePPQ !== 'number' || obj.sourcePPQ < 1) throw new Error('Invalid PPQ');
+    if (typeof obj.analysis?.swingPercent !== 'number') throw new Error('Missing analysis');
+    // Reconstruct
+    const profile = obj.timingOffsets.map((off, i) => ({
+      offset: off,
+      avgVel: (obj.velocityDeviations[i] || 0) + (obj.analysis?.avgVelocity || 100),
+      devVel: 0,
+      hits: obj.sampleCounts[i] || 0
+    }));
+    const totalNotes = obj.sampleCounts.reduce((a,b) => a + b, 0);
+    sourceGroove = {
+      division: obj.sourcePPQ,
+      ticksPerBar: obj.sourcePPQ * 4,
+      stepTicks: obj.sourcePPQ * 4 / 16,
+      profile: profile,
+      swingPercent: obj.analysis.swingPercent,
+      totalNotes: totalNotes,
+      avgVelocity: obj.analysis.avgVelocity || 100,
+      stepCount: 16
+    };
+    sourceDivision = obj.sourcePPQ;
+    if (!grooveLibrary.find(g => g.id === obj.id)) {
+      grooveLibrary.push(obj);
+      updateLibraryUI();
+    }
+    document.getElementById('libraryStatus').textContent = 'Groove loaded from ' + file.name;
+    document.getElementById('libraryStatus').className = 'status ok';
+    updateAnalysis();
+  } catch(err) {
+    document.getElementById('libraryStatus').textContent = 'Error: ' + err.message;
+    document.getElementById('libraryStatus').className = 'status err';
+  }
+});
+
+function updateLibraryUI() {
+  const list = document.getElementById('libraryList');
+  if (!grooveLibrary.length) {
+    list.innerHTML = '<div class="library-item">No grooves saved.</div>';
+    return;
+  }
+  list.innerHTML = grooveLibrary.map((g, i) => {
+    const name = g.name.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c] || c));
+    const swing = g.analysis?.swingPercent?.toFixed(1) || '?';
+    return `<div class="library-item">
+      <span>${name} (${g.sampleCounts?.reduce((a,b) => a + b, 0) || 0} notes, ${swing}% swing)</span>
+      <div>
+        <button class="secondary" data-load="${i}">Load</button>
+        <button class="danger" data-delete="${i}">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('[data-load]').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const i = parseInt(this.dataset.load);
+      const g = grooveLibrary[i];
+      if (g) {
+        const profile = g.timingOffsets.map((off, i) => ({
+          offset: off,
+          avgVel: (g.velocityDeviations[i] || 0) + (g.analysis?.avgVelocity || 100),
+          devVel: 0,
+          hits: g.sampleCounts[i] || 0
+        }));
+        const totalNotes = g.sampleCounts.reduce((a,b) => a + b, 0);
+        sourceGroove = {
+          division: g.sourcePPQ || 480,
+          ticksPerBar: (g.sourcePPQ || 480) * 4,
+          stepTicks: (g.sourcePPQ || 480) * 4 / 16,
+          profile: profile,
+          swingPercent: g.analysis?.swingPercent || 50,
+          totalNotes: totalNotes,
+          avgVelocity: g.analysis?.avgVelocity || 100,
+          stepCount: 16
+        };
+        sourceDivision = g.sourcePPQ || 480;
+        document.getElementById('libraryStatus').textContent = 'Loaded groove: ' + g.name;
+        document.getElementById('libraryStatus').className = 'status ok';
+        updateAnalysis();
+      }
+    });
+  });
+  list.querySelectorAll('[data-delete]').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const i = parseInt(this.dataset.delete);
+      grooveLibrary.splice(i, 1);
+      updateLibraryUI();
+    });
+  });
+}
+
+// ----------------------- Playback (fixed) -----------------------
+function playEvents(eventsPerTrack, type) {
+  stopPlayback();
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+  }
+  if (!audioCtx) { document.getElementById('playbackStatus').textContent = 'Audio not supported.'; return; }
+
+  const allNotes = [];
+  for (const track of eventsPerTrack) {
+    for (const ev of track) {
+      if (ev.type === 'noteOn') {
+        // We need note off to get duration; we'll collect noteOffs and match by noteId
+        allNotes.push(ev);
+      }
+    }
+  }
+  if (!allNotes.length) {
+    document.getElementById('playbackStatus').textContent = 'No notes to play.';
+    document.getElementById('playbackStatus').className = 'status err';
+    return;
+  }
+
+  // Build note pairs with durations
+  const noteMap = new Map();
+  for (const track of eventsPerTrack) {
+    for (const ev of track) {
+      if (ev.type === 'noteOn') {
+        noteMap.set(ev.noteId, { on: ev, off: null });
+      }
+      if (ev.type === 'noteOff') {
+        const entry = noteMap.get(ev.noteId);
+        if (entry) entry.off = ev;
+      }
+    }
+  }
+  const pairs = [];
+  for (const [id, entry] of noteMap) {
+    if (entry.on) {
+      const dur = entry.off ? (entry.off.tick - entry.on.tick) : 240; // fallback
+      pairs.push({ tick: entry.on.tick, pitch: entry.on.pitch, velocity: entry.on.velocity, duration: Math.max(24, dur) });
+    }
+  }
+  if (!pairs.length) {
+    document.getElementById('playbackStatus').textContent = 'No valid notes.';
+    document.getElementById('playbackStatus').className = 'status err';
+    return;
+  }
+
+  // Compute total duration in seconds using target tempo (use initial tempo for now)
+  const tempo = targetTempo || 120;
+  const secPerTick = 60 / (tempo * targetDivision);
+  const maxTick = Math.max(...pairs.map(n => n.tick + n.duration));
+  const totalSec = maxTick * secPerTick;
+
+  const now = audioCtx.currentTime;
+  const startTime = now + 0.1;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.25;
+  gain.connect(audioCtx.destination);
+
+  const nodes = [];
+  for (const note of pairs) {
+    const t = startTime + note.tick * secPerTick;
+    const dur = note.duration * secPerTick;
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.frequency.value = 440 * Math.pow(2, (note.pitch - 69) / 12);
+    osc.type = 'triangle';
+    g.gain.value = (note.velocity / 127) * 0.3;
+    osc.connect(g);
+    g.connect(gain);
+    osc.start(t);
+    osc.stop(t + Math.max(0.02, dur));
+    nodes.push(osc, g);
+  }
+
+  // Update playhead via requestAnimationFrame
+  let rafId = null;
+  let startPerf = performance.now();
+  function updatePlayhead() {
+    if (!playState.playing) return;
+    const elapsed = (performance.now() - startPerf) / 1000;
+    const progress = clamp(elapsed / totalSec, 0, 1);
+    document.getElementById('playheadPos').style.width = (progress * 100) + '%';
+    if (progress < 1) {
+      rafId = requestAnimationFrame(updatePlayhead);
+    } else {
+      stopPlayback();
+    }
+  }
+  playState.playing = true;
+  playState.type = type;
+  playState.totalTicks = maxTick;
+  playState.startTime = startTime;
+  playState.nodes = nodes;
+  playState.rafId = rafId;
+  rafId = requestAnimationFrame(updatePlayhead);
+
+  // Clear after playback ends
+  setTimeout(() => {
+    if (playState.playing) stopPlayback();
+  }, totalSec * 1000 + 500);
+}
+
+function stopPlayback() {
+  if (playState.rafId) cancelAnimationFrame(playState.rafId);
+  playState.rafId = null;
+  if (playState.nodes) {
+    for (const n of playState.nodes) {
+      try { n.stop(); n.disconnect(); } catch(e) {}
+    }
+  }
+  playState.nodes = [];
+  playState.playing = false;
+  document.getElementById('playheadPos').style.width = '0%';
+  // Resume audio context if suspended
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+document.getElementById('playBeforeBtn').addEventListener('click', () => {
+  if (!targetEvents) {
+    document.getElementById('playbackStatus').textContent = 'Load a target first.';
+    document.getElementById('playbackStatus').className = 'status err';
+    return;
+  }
+  playEvents(targetEvents, 'before');
+  document.getElementById('playbackStatus').textContent = 'Playing original target.';
+  document.getElementById('playbackStatus').className = 'status ok';
+});
+
+document.getElementById('playAfterBtn').addEventListener('click', () => {
+  if (!appliedEvents) {
+    document.getElementById('playbackStatus').textContent = 'Apply a groove first.';
+    document.getElementById('playbackStatus').className = 'status err';
+    return;
+  }
+  playEvents(appliedEvents, 'after');
+  document.getElementById('playbackStatus').textContent = 'Playing grooved version.';
+  document.getElementById('playbackStatus').className = 'status ok';
+});
+
+document.getElementById('stopBtn').addEventListener('click', stopPlayback);
+
+// ----------------------- Reset -----------------------
+document.getElementById('resetProject').addEventListener('click', () => {
+  stopPlayback();
+  sourceEvents = null; sourceDivision = null; sourceGroove = null;
+  targetEvents = null; targetDivision = null; targetFileName = '';
+  appliedEvents = null;
+  document.getElementById('sourceStatus').textContent = 'Reset.';
+  document.getElementById('sourceStatus').className = 'status';
+  document.getElementById('targetStatus').textContent = 'Reset.';
+  document.getElementById('targetStatus').className = 'status';
+  document.getElementById('applyResult').textContent = '';
+  document.getElementById('applyResult').className = 'status';
+  document.getElementById('exportStatus').textContent = 'Reset.';
+  document.getElementById('exportStatus').className = 'status';
+  document.getElementById('playbackStatus').textContent = 'Reset.';
+  document.getElementById('playbackStatus').className = 'status';
+  document.getElementById('sourceInfo').innerHTML = '';
+  document.getElementById('targetInfo').innerHTML = '';
+  document.getElementById('trackSelection').innerHTML = '<span style="font-weight:600;margin-right:8px;">Apply to tracks:</span><span id="trackList">(load target)</span>';
+  document.querySelectorAll('canvas').forEach(c => c.getContext('2d').clearRect(0,0,c.width,c.height));
+  sourceFile.value = '';
+  targetFile.value = '';
+  invalidateApply();
+  document.getElementById('playAfterBtn').disabled = true;
+  document.getElementById('exportBtn').disabled = true;
+});
+
+// Strength displays
+document.getElementById('timingStrength').addEventListener('input', function() {
+  document.getElementById('timingStrengthVal').textContent = this.value + '%';
+});
+document.getElementById('velStrength').addEventListener('input', function() {
+  document.getElementById('velStrengthVal').textContent = this.value + '%';
+});
+
+// Visualize button
+document.getElementById('visualizeBtn').addEventListener('click', () => {
+  if (sourceEvents) {
+    const notes = extractNoteOns(sourceEvents);
+    drawPianoRoll(document.getElementById('pianoRollBefore'), notes, sourceDivision);
+  }
+});
+
+// Initial state
+invalidateApply();
+document.getElementById('playAfterBtn').disabled = true;
+document.getElementById('exportBtn').disabled = true;
+
+console.log('MIDI Groove Extractor Pro v4 ready.');
+</script>
+</body>
+</html>
