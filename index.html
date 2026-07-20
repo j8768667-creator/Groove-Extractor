@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
-<title>MIDI Groove Extractor Pro v4.2</title>
+<title>MIDI Groove Extractor Pro v4.3</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f2f4f8;color:#1a1e2c;touch-action:manipulation}
@@ -54,7 +54,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
 <body>
 <div class="app" id="app">
   <header>
-    <h1>MIDI Groove Extractor <small>Pro v4.2</small></h1>
+    <h1>MIDI Groove Extractor <small>Pro v4.3</small></h1>
   </header>
 
   <div class="tabs" id="tabs">
@@ -386,6 +386,20 @@ function buildMidiFromEvents(eventsPerTrack, division, format) {
 // --------------------------------------------------------------------
 //  GROOVE ANALYSIS (fixed swing, time signature awareness)
 // --------------------------------------------------------------------
+function chooseGrooveStep(barTick, stepTicks, stepCount) {
+  // Prefer an eighth-note anchor when a note is plausibly a swung eighth.
+  // The old nearest-16th calculation misclassified a swung offbeat (for
+  // example tick 320 at 480 PPQ) as sixteenth step 3 instead of step 2,
+  // leaving the target offbeat with a zero groove offset.
+  const beatTicks = stepTicks * 4;
+  const nearest16 = Math.round(barTick / stepTicks);
+  const nearest8 = Math.round(barTick / (stepTicks * 2)) * 2;
+  const dist8 = Math.abs(barTick - nearest8 * stepTicks);
+  const eighthTolerance = beatTicks * 0.22;
+  const chosen = dist8 <= eighthTolerance ? nearest8 : nearest16;
+  return ((chosen % stepCount) + stepCount) % stepCount;
+}
+
 function analyzeGroove(eventsPerTrack, division) {
   // Extract noteOns from all tracks (or later we can limit to selected track)
   const noteOns = [];
@@ -410,8 +424,8 @@ function analyzeGroove(eventsPerTrack, division) {
   for (const n of noteOns) {
     const bar = Math.floor(n.tick / ticksPerBar);
     const barTick = n.tick - bar * ticksPerBar;
-    const step = Math.round(barTick / stepTicks) % stepsPerBar;
-    const gridTick = Math.round(barTick / stepTicks) * stepTicks;
+    const step = chooseGrooveStep(barTick, stepTicks, stepsPerBar);
+    const gridTick = step * stepTicks;
     const offset = n.tick - (bar * ticksPerBar + gridTick);
     profile[step].offsets.push(offset);
     profile[step].velocities.push(n.velocity);
@@ -446,13 +460,12 @@ function analyzeGroove(eventsPerTrack, division) {
     const onStep = beat * 4;
     const offStep = beat * 4 + 2;
     if (stepData[offStep].hits > 0 && stepData[onStep].hits > 0) {
-      // The offbeat eighth is two steps later; straight would be exactly 2*stepTicks
+      // Swing percentage is the offbeat onset as a percentage of the beat:
+      // straight eighths = 50%, triplet swing = about 66.7%.
       const onOff = stepData[onStep].offset;
       const offOff = stepData[offStep].offset;
-      const actualOff = offOff - onOff + stepTicks * 2;
-      // 50% means actualOff == stepTicks*2
-      // 100% would mean actualOff == stepTicks*4 (i.e. triplet feel)
-      const ratio = (actualOff - stepTicks*2) / (stepTicks*2) * 100 + 50; // convert to 50..100 scale
+      const actualOff = stepTicks * 2 + offOff - onOff;
+      const ratio = actualOff / (stepTicks * 4) * 100;
       swingSum += clamp(ratio, 0, 100);
       swingCount++;
     }
@@ -520,8 +533,8 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     const ticksPerBar = profile.ticksPerBar;
     const bar = Math.floor(tick / ticksPerBar);
     const barTick = tick - bar * ticksPerBar;
-    const step = Math.round(barTick / profile.stepTicks) % profile.stepCount;
-    const gridTick = Math.round(barTick / profile.stepTicks) * profile.stepTicks;
+    const step = chooseGrooveStep(barTick, profile.stepTicks, profile.stepCount);
+    const gridTick = step * profile.stepTicks;
     const offset = profile.profile[step].offset;
     // Compute the full groove target, then interpolate linearly.
     const grooveTarget = gridTick + offset;
@@ -536,7 +549,7 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     const ticksPerBar = profile.ticksPerBar;
     const bar = Math.floor(tick / ticksPerBar);
     const barTick = tick - bar * ticksPerBar;
-    const step = Math.round(barTick / profile.stepTicks) % profile.stepCount;
+    const step = chooseGrooveStep(barTick, profile.stepTicks, profile.stepCount);
     const avg = profile.profile[step].avgVel;
     if (avg === 0) return vel;
     const diff = avg - profile.avgVelocity;
@@ -905,7 +918,7 @@ document.getElementById('applyBtn').addEventListener('click', () => {
       ? Math.round(changeStats.maxMoveTicks / (targetDivision * (targetTempo / 60)) * 1000)
       : 0;
     if (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) {
-      document.getElementById('applyResult').textContent = 'No audible change was produced. Try a source with stronger timing/velocity variation, increase strengths, increase Max Timing Shift, or turn off bass protection.';
+      document.getElementById('applyResult').textContent = 'No change was produced. Check that the chosen target tracks contain notes. For a stronger result, increase Timing/Velocity Strength, raise Max Timing Shift, or turn off bass protection.';
     } else {
       document.getElementById('applyResult').textContent = `Groove applied: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, maximum shift ${maxMoveMs} ms.`;
     }
@@ -1286,7 +1299,7 @@ invalidateApply();
 document.getElementById('playAfterBtn').disabled = true;
 document.getElementById('exportBtn').disabled = true;
 
-console.log('MIDI Groove Extractor Pro v4.2 ready.');
+console.log('MIDI Groove Extractor Pro v4.3 true groove fix ready.');
 </script>
 </body>
 </html>
