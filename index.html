@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
-<title>MIDI Groove Extractor Pro v4.3</title>
+<title>MIDI Groove Extractor Pro v4.4</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f2f4f8;color:#1a1e2c;touch-action:manipulation}
@@ -54,7 +54,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
 <body>
 <div class="app" id="app">
   <header>
-    <h1>MIDI Groove Extractor <small>Pro v4.3</small></h1>
+    <h1>MIDI Groove Extractor <small>Pro v4.4</small></h1>
   </header>
 
   <div class="tabs" id="tabs">
@@ -537,7 +537,10 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     const gridTick = step * profile.stepTicks;
     const offset = profile.profile[step].offset;
     // Compute the full groove target, then interpolate linearly.
-    const grooveTarget = gridTick + offset;
+    // IMPORTANT: gridTick is bar-relative. Include the absolute bar start.
+    // Without this, every note after bar 1 was pulled toward bar 1 and merely
+    // limited by Max Timing Shift, producing a near-uniform shift rather than groove.
+    const grooveTarget = bar * ticksPerBar + gridTick + offset;
     const newTick = tick + (grooveTarget - tick) * (strength / 100);
     // Clamp by max shift
     const shift = newTick - tick;
@@ -653,7 +656,7 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
 
   // Record exactly how much changed so the UI can warn when the source
   // groove is effectively straight/flat or protection settings are too strong.
-  let movedNotes = 0, velocityChanged = 0, maxMoveTicks = 0;
+  let movedNotes = 0, velocityChanged = 0, maxMoveTicks = 0, totalMoveTicks = 0;
   for (let ti = 0; ti < newEvents.length; ti++) {
     const beforeTrack = eventsPerTrack[ti] || [];
     const beforeById = new Map(beforeTrack.filter(e => e.type === 'noteOn').map(e => [e.noteId, e]));
@@ -662,12 +665,17 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
       const before = beforeById.get(ev.noteId);
       if (!before) continue;
       const move = Math.abs(ev.tick - before.tick);
-      if (move > 0) movedNotes++;
+      if (move > 0) { movedNotes++; totalMoveTicks += move; }
       if (ev.velocity !== before.velocity) velocityChanged++;
       if (move > maxMoveTicks) maxMoveTicks = move;
     }
   }
-  newEvents._grooveStats = { movedNotes, velocityChanged, maxMoveTicks };
+  newEvents._grooveStats = {
+    movedNotes,
+    velocityChanged,
+    maxMoveTicks,
+    avgMoveTicks: movedNotes ? totalMoveTicks / movedNotes : 0
+  };
   return newEvents;
 }
 
@@ -913,14 +921,18 @@ document.getElementById('applyBtn').addEventListener('click', () => {
       targetTempo
     );
 
-    const changeStats = appliedEvents._grooveStats || { movedNotes: 0, velocityChanged: 0, maxMoveTicks: 0 };
-    const maxMoveMs = targetDivision && targetTempo
-      ? Math.round(changeStats.maxMoveTicks / (targetDivision * (targetTempo / 60)) * 1000)
+    const changeStats = appliedEvents._grooveStats || { movedNotes: 0, velocityChanged: 0, maxMoveTicks: 0, avgMoveTicks: 0 };
+    const ticksPerSecondForStats = targetDivision * (targetTempo / 60);
+    const maxMoveMs = ticksPerSecondForStats
+      ? Math.round(changeStats.maxMoveTicks / ticksPerSecondForStats * 1000)
+      : 0;
+    const avgMoveMs = ticksPerSecondForStats
+      ? Math.round(changeStats.avgMoveTicks / ticksPerSecondForStats * 1000)
       : 0;
     if (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) {
       document.getElementById('applyResult').textContent = 'No change was produced. Check that the chosen target tracks contain notes. For a stronger result, increase Timing/Velocity Strength, raise Max Timing Shift, or turn off bass protection.';
     } else {
-      document.getElementById('applyResult').textContent = `Groove applied: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, maximum shift ${maxMoveMs} ms.`;
+      document.getElementById('applyResult').textContent = `Groove applied: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, average shift ${avgMoveMs} ms, maximum shift ${maxMoveMs} ms.`;
     }
     document.getElementById('applyResult').className = (changeStats.movedNotes === 0 && changeStats.velocityChanged === 0) ? 'status err' : 'status ok';
     // Draw after piano roll
@@ -1299,7 +1311,7 @@ invalidateApply();
 document.getElementById('playAfterBtn').disabled = true;
 document.getElementById('exportBtn').disabled = true;
 
-console.log('MIDI Groove Extractor Pro v4.3 true groove fix ready.');
+console.log('MIDI Groove Extractor Pro v4.4 bar-position groove fix ready.');
 </script>
 </body>
 </html>
