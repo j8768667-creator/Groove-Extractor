@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=yes">
-<title>MIDI Groove Extractor Pro v5.1</title>
+<title>MIDI Groove Extractor Pro v5.2</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f2f4f8;color:#1a1e2c;touch-action:manipulation}
@@ -55,7 +55,7 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
 <body>
 <div class="app" id="app">
   <header>
-    <h1>MIDI Groove Extractor <small>Pro v5.1</small></h1>
+    <h1>MIDI Groove Extractor <small>Pro v5.2</small></h1>
   </header>
 
   <div class="tabs" id="tabs">
@@ -124,7 +124,8 @@ canvas{display:block;width:100%;height:auto;image-rendering:pixelated}
       <span id="trackList">(load target)</span>
     </div>
     <button id="applyBtn">⚡ Apply / Reapply from Original</button>
-    <div class="status" style="font-size:12px">Every application starts from the originally loaded target MIDI, so changing a setting never compounds or reuses an older result. 100% strength reproduces the extracted timing exactly (clamped only by Max Timing Shift).</div>
+    <div class="status" style="font-size:12px">Every application starts from the originally loaded target MIDI, so changing a setting never compounds or reuses an older result.<br><br>
+    <b>How this actually works (not sidechaining):</b> the source is reduced to a fixed 16-step-per-bar timing/velocity template. Each target note is matched to its nearest step and pulled toward that step's position by <i>Timing Strength</i> — 0% leaves it untouched, 100% puts it exactly on the source's timing for that step, 50% moves it exactly halfway there. How far that actually is in ms depends on how far the note already sits from the grid, then <i>Max Timing Shift</i> (and the tighter <i>Bass Max Shift</i>) hard-caps the result in milliseconds regardless of Strength — so if a note is capped, raising Strength further won't move it any more; you'll need to raise the ms cap instead. Velocity Strength works the same way but on loudness: it nudges each note by the source step's own deviation from its track average, scaled by the slider — it does not copy the source's absolute velocities.</div>
     <div id="applyResult" class="status"></div>
     <div class="canvas-wrap">
       <canvas id="pianoRollAfter"></canvas>
@@ -530,14 +531,11 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
   const maxShiftTicks = Math.round(maxShiftMs / 1000 * ticksPerSecond);
   const bassMaxShiftTicks = Math.round(bassMaxShiftMs / 1000 * ticksPerSecond);
 
-  // Non-linear strength curve (fix 5): 100% = exact, 50% ≈ 70% of shift (audible)
-  function strengthCurve(s) {
-    let t = s / 100;
-    if (t >= 1) return 1;
-    if (t <= 0) return 0;
-    return Math.pow(t, 0.5); // sqrt: 0.5 -> ~0.707, 0.25 -> 0.5
-  }
-  const tFactor = strengthCurve(timingStr);
+  // Linear strength (fix 9): the slider is now a direct blend fraction between
+  // "no change" (0%) and "note sits exactly on the source's grid+offset position"
+  // (100%). Previously this used sqrt(t), so 50% actually applied ~70.7% of the
+  // shift — the slider didn't mean what it said. It now does.
+  const tFactor = clamp(timingStr / 100, 0, 1);
 
   // Build chord groups (per track and channel)
   const chordGroups = [];
@@ -586,8 +584,10 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     const rawShift = desiredTick - tick;
     const shift = rawShift * tFactor;
     const cap = (preserveBass && isBass) ? bassMaxShiftTicks : maxShiftTicks;
-    return tick + clamp(shift, -cap, cap);
+    const clamped = Math.abs(shift) > cap + 0.5;
+    return { tick: tick + clamp(shift, -cap, cap), clamped };
   }
+  let clampedTimingCount = 0;
 
   function applyVelocity(vel, tick) {
     const ticksPerBar = sourceProfile.ticksPerBar;
@@ -631,8 +631,9 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
         const avgVel = group.reduce((s, n) => s + n.velocity, 0) / group.length;
         let shift = 0, velShift = 0;
         if (mode === 'timing' || mode === 'both') {
-          const newEarliestTick = applyTiming(earliest.tick, isBassGroup);
-          shift = newEarliestTick - earliest.tick;
+          const result = applyTiming(earliest.tick, isBassGroup);
+          shift = result.tick - earliest.tick;
+          if (result.clamped) clampedTimingCount += group.length;
         }
         if (mode === 'velocity' || mode === 'both') {
           const newAvgVel = applyVelocity(avgVel, earliest.tick);
@@ -652,8 +653,9 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
       // Individual note — no stacked attenuation (fix 2), bass capped not flattened (fix 3)
       let newTick = ev.tick, newVel = ev.velocity;
       if (mode === 'timing' || mode === 'both') {
-        newTick = applyTiming(ev.tick, isBass);
-        newTick = Math.max(0, newTick);
+        const result = applyTiming(ev.tick, isBass);
+        newTick = Math.max(0, result.tick);
+        if (result.clamped) clampedTimingCount++;
       }
       if (mode === 'velocity' || mode === 'both') {
         newVel = applyVelocity(ev.velocity, ev.tick);
@@ -714,7 +716,8 @@ function applyGrooveToEvents(eventsPerTrack, sourceProfile, timingStr, velStr, m
     movedNotes,
     velocityChanged,
     maxMoveTicks,
-    avgMoveTicks: movedNotes ? totalMoveTicks / movedNotes : 0
+    avgMoveTicks: movedNotes ? totalMoveTicks / movedNotes : 0,
+    clampedTimingCount
   };
   return newEvents;
 }
@@ -1014,15 +1017,18 @@ document.getElementById('applyBtn').addEventListener('click', () => {
     } else {
       let msg = `Fresh reapply from original target: ${changeStats.movedNotes} note starts moved, ${changeStats.velocityChanged} velocities changed, average shift ${avgMoveMs} ms, maximum shift ${maxMoveMs} ms.`;
       if (sourceGroove.normalized) msg += ' (Source groove was normalised — see Analysis.)';
+      if (changeStats.clampedTimingCount > 0) {
+        msg += ` ${changeStats.clampedTimingCount} note(s) wanted to move further than Max Timing Shift allows and were capped — raise Max Timing Shift (or Bass Max Shift) to let more of the groove through; raising Timing Strength further will not move them any more.`;
+      }
       document.getElementById('applyResult').textContent = msg;
-      document.getElementById('applyResult').className = 'status ok';
+      document.getElementById('applyResult').className = changeStats.clampedTimingCount > 0 ? 'status warn' : 'status ok';
     }
 
     // ---- Effective timing movement shown before export (fix 8) ----
     const moveEl = document.getElementById('exportMovement');
     moveEl.style.display = 'block';
-    moveEl.className = 'status ok';
-    moveEl.textContent = `Effective timing movement — average: ${avgMoveMs} ms, maximum: ${maxMoveMs} ms across ${changeStats.movedNotes} notes.`;
+    moveEl.className = changeStats.clampedTimingCount > 0 ? 'status warn' : 'status ok';
+    moveEl.textContent = `Effective timing movement — average: ${avgMoveMs} ms, maximum: ${maxMoveMs} ms across ${changeStats.movedNotes} notes.` + (changeStats.clampedTimingCount > 0 ? ` (${changeStats.clampedTimingCount} note(s) capped by Max Timing Shift.)` : '');
 
     const notes = extractNoteOns(appliedEvents);
     drawPianoRoll(document.getElementById('pianoRollAfter'), notes, targetDivision);
@@ -1395,7 +1401,7 @@ invalidateApply();
 document.getElementById('playAfterBtn').disabled = true;
 document.getElementById('exportBtn').disabled = true;
 
-console.log('MIDI Groove Extractor Pro v5.1 ready — fixed: channel-10 percussion (and any note < pitch 48) was being silently capped by Bass Max Shift instead of Max Timing Shift, muting most drum-groove results regardless of strength; drum channel is now always exempt, and Drum-aware mode is wired up to extend that exemption to other channels.');
+console.log('MIDI Groove Extractor Pro v5.2 ready — fixed: Timing Strength used a hidden sqrt curve so 50% actually applied ~70.7% of the shift; it is now linear and means what it says. Added clamped-note reporting: when Max Timing Shift / Bass Max Shift caps a note\'s movement, the Apply and Export panels now say so explicitly and tell you raising Strength further will not help — only raising the ms cap will. Apply panel copy rewritten to describe the actual mechanism (grid-template blend with a hard ms ceiling) instead of implying continuous/sidechain-style modulation.');
 </script>
 </body>
 </html>
